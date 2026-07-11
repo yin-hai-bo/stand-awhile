@@ -1,3 +1,4 @@
+mod draw;
 mod theme;
 mod window_proc;
 
@@ -7,14 +8,14 @@ use windows::Win32::{
     UI::WindowsAndMessaging::{
         AdjustWindowRectEx, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DispatchMessageW, GetMessageW, GetSystemMetrics,
         HMENU, IDC_ARROW, IDI_APPLICATION, LoadCursorW, LoadIconW, MB_ICONERROR, MB_OK, MSG, MessageBoxW,
-        RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SW_SHOW, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WNDCLASSW,
-        WS_CAPTION, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
+        RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SW_SHOW, SetTimer, ShowWindow, TranslateMessage, WINDOW_EX_STYLE,
+        WNDCLASSW, WS_CAPTION, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
     },
 };
 use windows::core::{Error, PCWSTR, Result, w};
 
 use theme::apply_theme;
-use window_proc::window_proc;
+use window_proc::{TIMER_ID, window_proc};
 
 const WINDOW_WIDTH: i32 = 800;
 const WINDOW_HEIGHT: i32 = 533;
@@ -69,6 +70,7 @@ fn run() -> Result<()> {
     apply_theme(hwnd)?;
 
     unsafe {
+        let _ = SetTimer(Some(hwnd), TIMER_ID, 1_000, None);
         let _ = ShowWindow(hwnd, SW_SHOW);
     }
 

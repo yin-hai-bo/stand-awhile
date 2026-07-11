@@ -7,7 +7,6 @@ use windows::Win32::{
         Gdi::{CreateSolidBrush, DeleteObject, FillRect, InvalidateRect},
     },
     System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW},
-    UI::WindowsAndMessaging::GetClientRect,
 };
 use windows::core::{Error, HRESULT, Result, w};
 
@@ -15,6 +14,8 @@ static IS_DARK_MODE: AtomicBool = AtomicBool::new(false);
 
 const DARK_BACKGROUND: COLORREF = COLORREF(0x202020);
 const LIGHT_BACKGROUND: COLORREF = COLORREF(0xF0F0F0);
+const DARK_TEXT: COLORREF = COLORREF(0xF0F0F0);
+const LIGHT_TEXT: COLORREF = COLORREF(0x202020);
 
 pub fn is_dark_mode() -> Result<bool> {
     let mut value = 1u32;
@@ -56,10 +57,7 @@ pub fn apply_theme(hwnd: HWND) -> Result<()> {
     Ok(())
 }
 
-pub fn paint_background(hwnd: HWND, hdc: windows::Win32::Graphics::Gdi::HDC) -> Result<()> {
-    let mut rect = RECT::default();
-    unsafe { GetClientRect(hwnd, &mut rect)? };
-
+pub fn paint_background(rect: &RECT, hdc: windows::Win32::Graphics::Gdi::HDC) -> Result<()> {
     let color = if IS_DARK_MODE.load(Ordering::Relaxed) {
         DARK_BACKGROUND
     } else {
@@ -72,7 +70,7 @@ pub fn paint_background(hwnd: HWND, hdc: windows::Win32::Graphics::Gdi::HDC) -> 
             return Err(Error::from_win32());
         }
 
-        let _ = FillRect(hdc, &rect, brush);
+        let _ = FillRect(hdc, rect, brush);
         let _ = DeleteObject(brush.into());
     }
 
@@ -81,4 +79,12 @@ pub fn paint_background(hwnd: HWND, hdc: windows::Win32::Graphics::Gdi::HDC) -> 
 
 pub fn refresh_theme(hwnd: HWND) {
     let _ = apply_theme(hwnd);
+}
+
+pub fn current_text_color() -> COLORREF {
+    if IS_DARK_MODE.load(Ordering::Relaxed) {
+        DARK_TEXT
+    } else {
+        LIGHT_TEXT
+    }
 }
