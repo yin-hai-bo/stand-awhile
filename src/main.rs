@@ -2,13 +2,13 @@ mod theme;
 mod window_proc;
 
 use windows::Win32::{
-    Foundation::HINSTANCE,
+    Foundation::{HINSTANCE, RECT},
     System::LibraryLoader::GetModuleHandleW,
     UI::WindowsAndMessaging::{
-        CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DispatchMessageW, GetMessageW, HMENU, IDC_ARROW,
-        IDI_APPLICATION, LoadCursorW, LoadIconW, MB_ICONERROR, MB_OK, MSG, MessageBoxW, RegisterClassW, SW_SHOW,
-        ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WNDCLASSW, WS_CAPTION, WS_MINIMIZEBOX, WS_OVERLAPPED,
-        WS_SYSMENU, WS_VISIBLE,
+        AdjustWindowRectEx, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DispatchMessageW, GetMessageW, GetSystemMetrics,
+        HMENU, IDC_ARROW, IDI_APPLICATION, LoadCursorW, LoadIconW, MB_ICONERROR, MB_OK, MSG, MessageBoxW,
+        RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SW_SHOW, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WNDCLASSW,
+        WS_CAPTION, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
     },
 };
 use windows::core::{Error, PCWSTR, Result, w};
@@ -47,14 +47,16 @@ fn run() -> Result<()> {
     }
 
     let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_VISIBLE;
+    let ex_style = WINDOW_EX_STYLE::default();
+    let (window_x, window_y) = centered_window_position(style, ex_style)?;
     let hwnd = unsafe {
         CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
+            ex_style,
             class_name,
             w!("stand-awhile"),
             style,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
+            window_x,
+            window_y,
             WINDOW_WIDTH,
             WINDOW_HEIGHT,
             None,
@@ -87,4 +89,31 @@ fn run() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn centered_window_position(
+    style: windows::Win32::UI::WindowsAndMessaging::WINDOW_STYLE,
+    ex_style: WINDOW_EX_STYLE,
+) -> Result<(i32, i32)> {
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: WINDOW_WIDTH,
+        bottom: WINDOW_HEIGHT,
+    };
+
+    unsafe {
+        AdjustWindowRectEx(&mut rect, style, false, ex_style)?;
+    }
+
+    let window_width = rect.right - rect.left;
+    let window_height = rect.bottom - rect.top;
+
+    let screen_width = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+    let screen_height = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+
+    let x = (screen_width - window_width) / 2;
+    let y = (screen_height - window_height) / 2;
+
+    Ok((x, y))
 }
