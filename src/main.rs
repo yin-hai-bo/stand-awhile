@@ -20,6 +20,7 @@ use windows::core::{Error, PCWSTR, Result, w};
 use i18n::{detect_language, main_window_title};
 use ui::{
     button::{create_control_buttons, layout_control_buttons, register_button_class, update_control_buttons},
+    check_box::CheckBox,
     component::Component,
     gdi_plus::GdiPlus,
     hyper_link_text::HyperLinkText,
@@ -30,6 +31,7 @@ use window_proc::{WindowState, attach_window_state, layout_window_state, set_ini
 const WINDOW_WIDTH: i32 = 800;
 const WINDOW_HEIGHT: i32 = 533;
 const APP_ICON_RESOURCE_ID: usize = 1;
+const TRAY_CHECK_BOX_MARGIN_X: i32 = 28;
 const CONFIG_LINK_MARGIN_X: i32 = 28;
 const CONFIG_LINK_MARGIN_Y: i32 = 34;
 
@@ -110,10 +112,19 @@ fn run(language: i18n::Language) -> Result<()> {
         },
         layout_config_link,
     )?;
+    let tray_check_box = CheckBox::create(
+        hwnd,
+        tray_check_box_text(language),
+        config.tray_when_close,
+        layout_tray_check_box,
+    )?;
     attach_window_state(
         hwnd,
         WindowState {
-            components: vec![Box::new(config_link) as Box<dyn Component>],
+            components: vec![
+                Box::new(config_link) as Box<dyn Component>,
+                Box::new(tray_check_box) as Box<dyn Component>,
+            ],
         },
     );
     layout_control_buttons(hwnd)?;
@@ -182,6 +193,13 @@ fn config_link_text(language: i18n::Language) -> &'static str {
     }
 }
 
+fn tray_check_box_text(language: i18n::Language) -> &'static str {
+    match language {
+        i18n::Language::Chinese => "关闭时缩小到系统托盘图标",
+        i18n::Language::English => "Minimize to system tray when closing",
+    }
+}
+
 fn layout_config_link(
     link: &HyperLinkText,
     parent: windows::Win32::Foundation::HWND,
@@ -198,6 +216,28 @@ fn layout_config_link(
         top: client_rect.bottom - CONFIG_LINK_MARGIN_Y - height,
         right: client_rect.right - CONFIG_LINK_MARGIN_X,
         bottom: client_rect.bottom - CONFIG_LINK_MARGIN_Y,
+    })
+}
+
+fn layout_tray_check_box(
+    check_box: &CheckBox,
+    parent: windows::Win32::Foundation::HWND,
+    dc: windows::Win32::Graphics::Gdi::HDC,
+) -> Result<()> {
+    let mut client_rect = RECT::default();
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::GetClientRect(parent, &mut client_rect)?;
+    }
+
+    let (width, height) = check_box.window_size(dc)?;
+    let bottom = client_rect.bottom - CONFIG_LINK_MARGIN_Y;
+    let top = bottom - height;
+
+    check_box.move_to(RECT {
+        left: client_rect.left + TRAY_CHECK_BOX_MARGIN_X,
+        top,
+        right: client_rect.left + TRAY_CHECK_BOX_MARGIN_X + width,
+        bottom: top + height,
     })
 }
 

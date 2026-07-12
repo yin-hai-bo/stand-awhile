@@ -7,6 +7,7 @@ use crate::ui::{
     button::{
         ControlButton, button_from_command, layout_control_buttons, refresh_control_buttons, update_control_buttons,
     },
+    check_box::{invalidate_check_box_font, release_check_box_font},
     component::Component,
     countdown_rect, draw_countdown,
     hyper_link_text::{invalidate_hyper_link_text_font, release_hyper_link_text_font},
@@ -105,6 +106,7 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
         }
         WM_DPICHANGED => {
             invalidate_countdown_font();
+            invalidate_check_box_font();
             invalidate_hyper_link_text_font();
 
             let suggested_rect = unsafe { &*(lparam.0 as *const RECT) };
@@ -136,6 +138,7 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
         WM_DESTROY => {
             unsafe {
                 let _ = KillTimer(Some(hwnd), TIMER_ID);
+                release_check_box_font();
                 release_countdown_font();
                 release_hyper_link_text_font();
                 PostQuitMessage(0);

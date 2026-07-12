@@ -19,16 +19,19 @@ const APP_SUBDIRECTORY_NAME: &str = "stand-awhile";
 const CONFIG_FILE_NAME: &str = "config.json";
 const DEFAULT_CONFIG_CONTENTS: &str = "{}\n";
 const DEFAULT_PERIOD_SECONDS: u32 = 20 * 60;
+const DEFAULT_TRAY_WHEN_CLOSE: bool = false;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
     pub period: u32,
+    pub tray_when_close: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             period: DEFAULT_PERIOD_SECONDS,
+            tray_when_close: DEFAULT_TRAY_WHEN_CLOSE,
         }
     }
 }
@@ -36,6 +39,7 @@ impl Default for Config {
 #[derive(Deserialize)]
 struct ConfigFile {
     period: Option<u32>,
+    tray_when_close: Option<bool>,
 }
 
 impl Config {
@@ -47,6 +51,7 @@ impl Config {
 
         Ok(Self {
             period: file.period.unwrap_or(DEFAULT_PERIOD_SECONDS),
+            tray_when_close: file.tray_when_close.unwrap_or(DEFAULT_TRAY_WHEN_CLOSE),
         })
     }
 }
@@ -148,4 +153,16 @@ fn io_error_to_win_error(error: std::io::Error) -> Error {
 
 fn wide_null(value: &str) -> Vec<u16> {
     value.encode_utf16().chain([0]).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+
+    #[test]
+    fn config_default_values_are_stable() {
+        let config = Config::default();
+        assert_eq!(config.period, 20 * 60);
+        assert!(!config.tray_when_close);
+    }
 }
