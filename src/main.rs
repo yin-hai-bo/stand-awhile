@@ -8,12 +8,16 @@ use windows::Win32::{
         AdjustWindowRectEx, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DispatchMessageW, GetMessageW, GetSystemMetrics,
         HMENU, IDC_ARROW, IDI_APPLICATION, LoadCursorW, LoadIconW, MB_ICONERROR, MB_OK, MSG, MessageBoxW,
         RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SW_SHOW, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WNDCLASSW,
-        WS_CAPTION, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
+        WS_CAPTION, WS_CLIPCHILDREN, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
     },
 };
 use windows::core::{Error, PCWSTR, Result, w};
 
-use ui::{gdi_plus::GdiPlus, theme::apply_theme};
+use ui::{
+    button::{create_control_buttons, layout_control_buttons, register_button_class, update_control_buttons},
+    gdi_plus::GdiPlus,
+    theme::apply_theme,
+};
 use window_proc::window_proc;
 
 const WINDOW_WIDTH: i32 = 800;
@@ -46,7 +50,9 @@ fn run() -> Result<()> {
         return Err(Error::from_win32());
     }
 
-    let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_VISIBLE;
+    register_button_class(instance)?;
+
+    let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN | WS_VISIBLE;
     let ex_style = WINDOW_EX_STYLE::default();
     let (window_x, window_y) = centered_window_position(style, ex_style)?;
     let hwnd = unsafe {
@@ -67,6 +73,9 @@ fn run() -> Result<()> {
     }?;
 
     let _gdi_plus = GdiPlus::new()?;
+    create_control_buttons(hwnd, instance)?;
+    layout_control_buttons(hwnd)?;
+    update_control_buttons(hwnd, true, false, false)?;
     apply_theme(hwnd)?;
 
     unsafe {
