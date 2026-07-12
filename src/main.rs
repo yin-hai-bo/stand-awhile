@@ -1,5 +1,6 @@
 mod config;
 mod i18n;
+mod toast;
 mod tray_icon;
 mod ui;
 mod window_proc;
@@ -56,6 +57,8 @@ fn main() {
 }
 
 fn run(language: i18n::Language) -> Result<()> {
+    let _ = toast::initialize();
+
     let config = Config::load()?;
     set_initial_remaining_seconds(config.period);
 

@@ -16,7 +16,8 @@ use crate::ui::{
 };
 use crate::{
     config::{open_config_directory, show_config_open_error},
-    i18n::{detect_language, main_window_title},
+    i18n::{detect_language, main_window_title, reminder_notification_message, reminder_notification_title},
+    toast,
     tray_icon::{TRAY_MENU_ABOUT_ID, TRAY_MENU_OPEN_CONFIG_ID, TrayIcon, WM_TRAYICON},
 };
 
@@ -24,9 +25,10 @@ use windows::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Gdi::{BeginPaint, EndPaint, GetDC, InvalidateRect, PAINTSTRUCT, ReleaseDC},
     UI::WindowsAndMessaging::{
-        DefWindowProcW, GWLP_USERDATA, GetWindowLongPtrW, KillTimer, MB_OK, MessageBoxW, PostQuitMessage, SW_HIDE,
-        SWP_NOACTIVATE, SWP_NOZORDER, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_CLOSE, WM_COMMAND,
-        WM_DESTROY, WM_DPICHANGED, WM_NCDESTROY, WM_PAINT, WM_SETTINGCHANGE, WM_THEMECHANGED, WM_TIMER,
+        DefWindowProcW, FLASHW_ALL, FLASHW_TIMERNOFG, FLASHWINFO, FlashWindowEx, GWLP_USERDATA, GetWindowLongPtrW,
+        IsWindowVisible, KillTimer, MB_OK, MessageBoxW, PostQuitMessage, SW_HIDE, SWP_NOACTIVATE, SWP_NOZORDER,
+        SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_DPICHANGED,
+        WM_NCDESTROY, WM_PAINT, WM_SETTINGCHANGE, WM_THEMECHANGED, WM_TIMER,
     },
 };
 
@@ -90,6 +92,7 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
                 if current_remaining == 0 {
                     *TIMER_STATE.lock().expect("timer state mutex poisoned") = TimerState::Finished;
                     stop_timer(hwnd);
+                    notify_timer_finished(hwnd);
                 }
 
                 let _ = sync_control_button_enabled(hwnd);
@@ -272,6 +275,45 @@ fn start_timer(hwnd: HWND) {
 fn stop_timer(hwnd: HWND) {
     unsafe {
         let _ = KillTimer(Some(hwnd), TIMER_ID);
+    }
+}
+
+fn notify_timer_finished(hwnd: HWND) {
+    if unsafe { IsWindowVisible(hwnd).as_bool() } {
+        flash_window(hwnd);
+        return;
+    }
+
+    let Some(state) = window_state(hwnd) else {
+        return;
+    };
+
+    let language = detect_language();
+    if toast::show(
+        reminder_notification_title(language),
+        reminder_notification_message(language),
+    )
+    .is_err()
+    {
+        let _ = state.tray_icon.show_notification(
+            hwnd,
+            reminder_notification_title(language),
+            reminder_notification_message(language),
+        );
+    }
+}
+
+fn flash_window(hwnd: HWND) {
+    let mut flash_info = FLASHWINFO {
+        cbSize: std::mem::size_of::<FLASHWINFO>() as u32,
+        hwnd,
+        dwFlags: FLASHW_ALL | FLASHW_TIMERNOFG,
+        uCount: 3,
+        dwTimeout: 0,
+    };
+
+    unsafe {
+        let _ = FlashWindowEx(&mut flash_info);
     }
 }
 

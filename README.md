@@ -14,7 +14,7 @@ Designed to be unobtrusive and minimal, it helps reduce the health risks of prol
 ## ✨ Features
 
 - ⏱ **Smart Timer**: Default 20-minute interval (fully configurable)
-- 🔕 **Gentle Notifications**: Non-intrusive pop-ups that don’t steal focus
+- 🔕 **Gentle Notifications**: Flash the window when visible, or show a Windows toast notification when minimized to tray
 - 🪶 **Lightweight**: Runs quietly in the system tray with minimal memory usage
 - 🛠 **Customizable**:
   - Adjust reminder intervals
@@ -39,5 +39,7 @@ Designed to be unobtrusive and minimal, it helps reduce the health risks of prol
 2. Download the latest `StandAwhile.zip`
 3. Extract and run `StandAwhile.exe`
 4. The app will minimize to the system tray
+
+Note: Windows toast notifications can be suppressed by system settings such as Do Not Disturb / Focus Assist.
 
 ### Build from Source

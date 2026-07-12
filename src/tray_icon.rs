@@ -1,7 +1,10 @@
 use windows::Win32::{
     Foundation::{HWND, LPARAM, POINT, WPARAM},
     UI::{
-        Shell::{NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW},
+        Shell::{
+            NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION,
+            NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW,
+        },
         WindowsAndMessaging::{
             AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, HICON, MF_STRING, SW_RESTORE, SW_SHOW,
             SetForegroundWindow, ShowWindow, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, TrackPopupMenu, WM_APP,
@@ -42,6 +45,7 @@ impl TrayIcon {
                 return Err(Error::from_win32());
             }
         }
+        set_notify_icon_version(hwnd, tooltip)?;
 
         Ok(Self {
             tooltip: tooltip.to_owned(),
@@ -59,8 +63,24 @@ impl TrayIcon {
         }
     }
 
+    pub fn show_notification(&self, hwnd: HWND, title: &str, message: &str) -> Result<()> {
+        let mut icon_data = notify_icon_data(hwnd, HICON::default(), &self.tooltip);
+        icon_data.uFlags = NIF_INFO;
+        icon_data.dwInfoFlags = NIIF_INFO;
+        copy_wide_text(title, &mut icon_data.szInfoTitle);
+        copy_wide_text(message, &mut icon_data.szInfo);
+
+        unsafe {
+            if !Shell_NotifyIconW(NIM_MODIFY, &icon_data).as_bool() {
+                return Err(Error::from_win32());
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn handle_callback(&self, hwnd: HWND, lparam: LPARAM) -> Result<bool> {
-        match lparam.0 as u32 {
+        match loword(lparam.0 as u32) as u32 {
             WM_LBUTTONDBLCLK => {
                 show_main_window(hwnd);
                 Ok(true)
@@ -140,13 +160,21 @@ fn notify_icon_data(hwnd: HWND, icon: HICON, tooltip: &str) -> NOTIFYICONDATAW {
         ..Default::default()
     };
 
-    let wide_tooltip = wide_null(tooltip);
-    let len = wide_tooltip
-        .len()
-        .saturating_sub(1)
-        .min(data.szTip.len().saturating_sub(1));
-    data.szTip[..len].copy_from_slice(&wide_tooltip[..len]);
+    copy_wide_text(tooltip, &mut data.szTip);
     data
+}
+
+fn set_notify_icon_version(hwnd: HWND, tooltip: &str) -> Result<()> {
+    let mut icon_data = notify_icon_data(hwnd, HICON::default(), tooltip);
+    icon_data.Anonymous.uVersion = NOTIFYICON_VERSION_4;
+
+    unsafe {
+        if !Shell_NotifyIconW(NIM_SETVERSION, &icon_data).as_bool() {
+            return Err(Error::from_win32());
+        }
+    }
+
+    Ok(())
 }
 
 fn show_main_window(hwnd: HWND) {
@@ -159,4 +187,15 @@ fn show_main_window(hwnd: HWND) {
 
 fn wide_null(value: &str) -> Vec<u16> {
     value.encode_utf16().chain([0]).collect()
+}
+
+fn copy_wide_text<const N: usize>(value: &str, target: &mut [u16; N]) {
+    let wide_text = wide_null(value);
+    let len = wide_text.len().saturating_sub(1).min(target.len().saturating_sub(1));
+    target[..len].copy_from_slice(&wide_text[..len]);
+    target[len] = 0;
+}
+
+fn loword(value: u32) -> u16 {
+    (value & 0xFFFF) as u16
 }

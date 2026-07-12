@@ -20,6 +20,20 @@ pub fn main_window_title(language: Language) -> &'static str {
     }
 }
 
+pub fn reminder_notification_title(language: Language) -> &'static str {
+    match language {
+        Language::Chinese => "时间到了",
+        Language::English => "Time is up",
+    }
+}
+
+pub fn reminder_notification_message(language: Language) -> &'static str {
+    match language {
+        Language::Chinese => "起来活动一下吧。",
+        Language::English => "Time to stand up and move around.",
+    }
+}
+
 fn detect_language_from_lang_id(lang_id: u16) -> Language {
     let primary_language = lang_id & 0x03ff;
     if primary_language == LANG_CHINESE_PRIMARY_ID {
