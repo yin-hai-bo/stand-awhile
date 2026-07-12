@@ -1,13 +1,15 @@
+mod config;
 mod i18n;
 mod ui;
 mod window_proc;
 
+use crate::config::{Config, open_config_directory, show_config_open_error};
 use windows::Win32::{
     Foundation::{HINSTANCE, RECT},
     System::LibraryLoader::GetModuleHandleW,
     UI::WindowsAndMessaging::{
         AdjustWindowRectEx, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DispatchMessageW, GetMessageW, GetSystemMetrics,
-        HICON, HMENU, IDC_ARROW, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTCOLOR, LoadCursorW, LoadIconW, LoadImageW,
+        HICON, IDC_ARROW, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTCOLOR, LoadCursorW, LoadIconW, LoadImageW,
         MB_ICONERROR, MB_OK, MSG, MessageBoxW, RegisterClassExW, SM_CXICON, SM_CXSCREEN, SM_CXSMICON, SM_CYICON,
         SM_CYSCREEN, SM_CYSMICON, SW_SHOW, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WNDCLASSEXW, WS_CAPTION,
         WS_CLIPCHILDREN, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
@@ -18,14 +20,18 @@ use windows::core::{Error, PCWSTR, Result, w};
 use i18n::{detect_language, main_window_title};
 use ui::{
     button::{create_control_buttons, layout_control_buttons, register_button_class, update_control_buttons},
+    component::Component,
     gdi_plus::GdiPlus,
+    hyper_link_text::HyperLinkText,
     theme::apply_theme,
 };
-use window_proc::window_proc;
+use window_proc::{WindowState, attach_window_state, layout_window_state, set_initial_remaining_seconds, window_proc};
 
 const WINDOW_WIDTH: i32 = 800;
 const WINDOW_HEIGHT: i32 = 533;
 const APP_ICON_RESOURCE_ID: usize = 1;
+const CONFIG_LINK_MARGIN_X: i32 = 28;
+const CONFIG_LINK_MARGIN_Y: i32 = 34;
 
 fn main() {
     let language = detect_language();
@@ -46,6 +52,9 @@ fn main() {
 }
 
 fn run(language: i18n::Language) -> Result<()> {
+    let config = Config::load()?;
+    set_initial_remaining_seconds(config.period);
+
     let app_title = wide_null(main_window_title(language));
     let instance: HINSTANCE = unsafe { GetModuleHandleW(None)? }.into();
     let class_name = w!("YHB-StandAwhileWindowClass");
@@ -83,7 +92,7 @@ fn run(language: i18n::Language) -> Result<()> {
             WINDOW_WIDTH,
             WINDOW_HEIGHT,
             None,
-            Some(HMENU::default()),
+            None,
             Some(instance),
             None,
         )
@@ -91,7 +100,24 @@ fn run(language: i18n::Language) -> Result<()> {
 
     let _gdi_plus = GdiPlus::new()?;
     create_control_buttons(hwnd, instance)?;
+    let config_link = HyperLinkText::create(
+        hwnd,
+        config_link_text(language),
+        |hwnd| {
+            if let Err(error) = open_config_directory(hwnd) {
+                show_config_open_error(hwnd, &error);
+            }
+        },
+        layout_config_link,
+    )?;
+    attach_window_state(
+        hwnd,
+        WindowState {
+            components: vec![Box::new(config_link) as Box<dyn Component>],
+        },
+    );
     layout_control_buttons(hwnd)?;
+    layout_window_state(hwnd)?;
     update_control_buttons(hwnd, true, false, false)?;
     apply_theme(hwnd)?;
 
@@ -147,6 +173,32 @@ fn centered_window_position(
 
 fn wide_null(value: &str) -> Vec<u16> {
     value.encode_utf16().chain([0]).collect()
+}
+
+fn config_link_text(language: i18n::Language) -> &'static str {
+    match language {
+        i18n::Language::Chinese => "打开配置目录",
+        i18n::Language::English => "Open config folder",
+    }
+}
+
+fn layout_config_link(
+    link: &HyperLinkText,
+    parent: windows::Win32::Foundation::HWND,
+    dc: windows::Win32::Graphics::Gdi::HDC,
+) -> Result<()> {
+    let mut client_rect = RECT::default();
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::GetClientRect(parent, &mut client_rect)?;
+    }
+
+    let (width, height) = link.window_size(dc)?;
+    link.move_to(RECT {
+        left: client_rect.right - CONFIG_LINK_MARGIN_X - width,
+        top: client_rect.bottom - CONFIG_LINK_MARGIN_Y - height,
+        right: client_rect.right - CONFIG_LINK_MARGIN_X,
+        bottom: client_rect.bottom - CONFIG_LINK_MARGIN_Y,
+    })
 }
 
 fn load_app_icons(instance: HINSTANCE) -> (HICON, HICON) {
