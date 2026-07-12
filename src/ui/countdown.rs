@@ -1,6 +1,6 @@
 use std::sync::Mutex;
 
-use crate::theme::current_text_color;
+use crate::ui::theme::current_text_color;
 use windows::core::Error;
 
 use windows::Win32::{

@@ -3,12 +3,10 @@ use std::sync::{
     atomic::{AtomicU32, Ordering},
 };
 
-use crate::{
+use crate::ui::{
+    button::{ControlButton, controls_rect, draw_controls, hit_test_control_button},
+    countdown_rect, draw_countdown, invalidate_countdown_font, release_countdown_font,
     theme::{paint_background, refresh_theme},
-    ui::{
-        button::{ControlButton, controls_rect, draw_controls, hit_test_control_button},
-        countdown_rect, draw_countdown, invalidate_countdown_font, release_countdown_font,
-    },
 };
 
 use windows::Win32::{
@@ -82,6 +80,7 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
                 let current_remaining = REMAINING_SECONDS.load(Ordering::Relaxed);
                 if current_remaining == 0 {
                     *TIMER_STATE.lock().expect("timer state mutex poisoned") = TimerState::Finished;
+                    stop_timer(hwnd);
                     invalidate_controls(hwnd);
                 }
                 unsafe {
@@ -237,10 +236,12 @@ fn activate_button(hwnd: HWND, button: ControlButton) {
                 }
             }
             *TIMER_STATE.lock().expect("timer state mutex poisoned") = TimerState::Running;
+            start_timer(hwnd);
             invalidate_controls(hwnd);
         }
         ControlButton::Pause => {
             *TIMER_STATE.lock().expect("timer state mutex poisoned") = TimerState::Paused;
+            stop_timer(hwnd);
             invalidate_controls(hwnd);
         }
         ControlButton::Reset => {
@@ -251,6 +252,12 @@ fn activate_button(hwnd: HWND, button: ControlButton) {
                 TimerState::NotStarted
             };
             *TIMER_STATE.lock().expect("timer state mutex poisoned") = new_state;
+            if matches!(
+                new_state,
+                TimerState::NotStarted | TimerState::Finished | TimerState::Paused
+            ) {
+                stop_timer(hwnd);
+            }
             unsafe {
                 invalidate_countdown(hwnd, previous_remaining);
                 invalidate_countdown(hwnd, INITIAL_REMAINING_SECONDS);
@@ -273,6 +280,18 @@ fn pause_enabled(timer_state: TimerState) -> bool {
 
 fn reset_enabled(remaining_seconds: u32) -> bool {
     remaining_seconds != INITIAL_REMAINING_SECONDS
+}
+
+fn start_timer(hwnd: HWND) {
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::SetTimer(Some(hwnd), TIMER_ID, 1_000, None);
+    }
+}
+
+fn stop_timer(hwnd: HWND) {
+    unsafe {
+        let _ = KillTimer(Some(hwnd), TIMER_ID);
+    }
 }
 
 fn point_from_lparam(lparam: LPARAM) -> (i32, i32) {

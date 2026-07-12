@@ -1,4 +1,4 @@
-use crate::theme::is_dark_theme_active;
+use crate::ui::theme::is_dark_theme_active;
 use windows::Win32::{
     Foundation::{COLORREF, HWND, POINT, RECT},
     Graphics::Gdi::{
