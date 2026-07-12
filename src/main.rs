@@ -13,7 +13,7 @@ use windows::Win32::{
 };
 use windows::core::{Error, PCWSTR, Result, w};
 
-use ui::theme::apply_theme;
+use ui::{gdi_plus::GdiPlus, theme::apply_theme};
 use window_proc::window_proc;
 
 const WINDOW_WIDTH: i32 = 800;
@@ -66,6 +66,7 @@ fn run() -> Result<()> {
         )
     }?;
 
+    let _gdi_plus = GdiPlus::new()?;
     apply_theme(hwnd)?;
 
     unsafe {

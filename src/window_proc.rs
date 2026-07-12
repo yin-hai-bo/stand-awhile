@@ -49,17 +49,19 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
             let hdc = unsafe { BeginPaint(hwnd, &mut paint) };
             let _ = paint_background(&paint.rcPaint, hdc);
             let _ = draw_countdown(hwnd, hdc, REMAINING_SECONDS.load(Ordering::Relaxed));
-            let button_state = BUTTON_STATE.lock().expect("button state mutex poisoned");
-            let timer_state = *TIMER_STATE.lock().expect("timer state mutex poisoned");
-            let _ = draw_controls(
-                hwnd,
-                hdc,
-                button_state.hovered,
-                button_state.pressed,
-                play_enabled(timer_state),
-                pause_enabled(timer_state),
-                reset_enabled(REMAINING_SECONDS.load(Ordering::Relaxed)),
-            );
+            if should_repaint_controls(hwnd, &paint.rcPaint) {
+                let button_state = BUTTON_STATE.lock().expect("button state mutex poisoned");
+                let timer_state = *TIMER_STATE.lock().expect("timer state mutex poisoned");
+                let _ = draw_controls(
+                    hwnd,
+                    hdc,
+                    button_state.hovered,
+                    button_state.pressed,
+                    play_enabled(timer_state),
+                    pause_enabled(timer_state),
+                    reset_enabled(REMAINING_SECONDS.load(Ordering::Relaxed)),
+                );
+            }
             unsafe {
                 let _ = EndPaint(hwnd, &paint);
             };
@@ -201,6 +203,18 @@ fn invalidate_controls(hwnd: HWND) {
             let _ = InvalidateRect(Some(hwnd), Some(&rect), false);
         }
     }
+}
+
+fn should_repaint_controls(hwnd: HWND, paint_rect: &RECT) -> bool {
+    if let Ok(button_rect) = controls_rect(hwnd) {
+        return rects_intersect(paint_rect, &button_rect);
+    }
+
+    true
+}
+
+fn rects_intersect(a: &RECT, b: &RECT) -> bool {
+    a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top
 }
 
 fn update_hover_state(hwnd: HWND, lparam: LPARAM) {

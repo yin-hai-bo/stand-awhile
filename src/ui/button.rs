@@ -1,10 +1,14 @@
 use crate::ui::theme::is_dark_theme_active;
+use windows::Win32::Graphics::GdiPlus::{
+    DashCapRound, FillModeAlternate, GdipCreateFromHDC, GdipCreatePen1, GdipCreateSolidFill, GdipDeleteBrush,
+    GdipDeleteGraphics, GdipDeletePen, GdipDrawArcI, GdipDrawEllipseI, GdipFillEllipseI, GdipFillPolygonI,
+    GdipFillRectangleI, GdipSetPenLineCap197819, GdipSetPenLineJoin, GdipSetPixelOffsetMode, GdipSetSmoothingMode,
+    GpBrush, GpGraphics, GpPen, LineCapRound, LineJoinRound, PixelOffsetModeHalf, Point as GpPoint,
+    SmoothingModeAntiAlias, Status, UnitPixel,
+};
 use windows::Win32::{
     Foundation::{COLORREF, HWND, POINT, RECT},
-    Graphics::Gdi::{
-        CreatePen, CreateSolidBrush, DeleteObject, Ellipse, GetStockObject, HDC, HOLLOW_BRUSH, PS_SOLID, Polygon,
-        Polyline, Rectangle, SelectObject,
-    },
+    Graphics::Gdi::HDC,
     UI::WindowsAndMessaging::GetClientRect,
 };
 use windows::core::Error;
@@ -69,6 +73,8 @@ pub fn draw_controls(
     pause_enabled: bool,
     reset_enabled: bool,
 ) -> windows::core::Result<()> {
+    let graphics = GdiPlusGraphics::from_hdc(hdc)?;
+
     for button in control_button_layouts(hwnd)? {
         let is_enabled = match button.kind {
             ControlButton::Play => play_enabled,
@@ -78,7 +84,7 @@ pub fn draw_controls(
         let is_hovered = is_enabled && hovered == Some(button.kind);
         let is_pressed = is_enabled && pressed == Some(button.kind);
 
-        draw_control_button(hdc, button, is_enabled, is_hovered, is_pressed)?;
+        draw_control_button(&graphics, button, is_enabled, is_hovered, is_pressed)?;
     }
 
     Ok(())
@@ -172,7 +178,7 @@ fn rect_from_origin(left: i32, top: i32, width: i32, height: i32) -> RECT {
 }
 
 fn draw_control_button(
-    hdc: HDC,
+    graphics: &GdiPlusGraphics,
     layout: ControlButtonLayout,
     enabled: bool,
     hovered: bool,
@@ -180,43 +186,34 @@ fn draw_control_button(
 ) -> windows::core::Result<()> {
     let prominent = !matches!(layout.kind, ControlButton::Reset);
     let colors = current_button_colors(enabled, prominent, hovered, pressed);
-    let pen = unsafe { CreatePen(PS_SOLID, 2, colors.border) };
-    if pen.is_invalid() {
-        return Err(Error::from_win32());
-    }
-
-    let brush = unsafe { CreateSolidBrush(colors.fill) };
-    if brush.is_invalid() {
-        unsafe {
-            let _ = DeleteObject(pen.into());
-        }
-        return Err(Error::from_win32());
-    }
-
-    let old_pen = unsafe { SelectObject(hdc, pen.into()) };
-    let old_brush = unsafe { SelectObject(hdc, brush.into()) };
+    let fill_brush = GdiPlusBrush::solid(colors.fill)?;
+    let border_pen = GdiPlusPen::new(colors.border, 2.0, true)?;
+    let width = layout.rect.right - layout.rect.left;
+    let height = layout.rect.bottom - layout.rect.top;
 
     unsafe {
-        let _ = Ellipse(
-            hdc,
+        ensure_gdiplus_ok(GdipFillEllipseI(
+            graphics.raw,
+            fill_brush.raw as *mut GpBrush,
             layout.rect.left,
             layout.rect.top,
-            layout.rect.right,
-            layout.rect.bottom,
-        );
+            width,
+            height,
+        ))?;
+        ensure_gdiplus_ok(GdipDrawEllipseI(
+            graphics.raw,
+            border_pen.raw,
+            layout.rect.left,
+            layout.rect.top,
+            width,
+            height,
+        ))?;
     }
 
     match layout.kind {
-        ControlButton::Play => draw_play_icon(hdc, layout.rect, colors.icon)?,
-        ControlButton::Pause => draw_pause_icon(hdc, layout.rect, colors.icon)?,
-        ControlButton::Reset => draw_reset_icon(hdc, layout.rect, colors.icon)?,
-    }
-
-    unsafe {
-        let _ = SelectObject(hdc, old_brush);
-        let _ = SelectObject(hdc, old_pen);
-        let _ = DeleteObject(brush.into());
-        let _ = DeleteObject(pen.into());
+        ControlButton::Play => draw_play_icon(graphics, layout.rect, colors.icon)?,
+        ControlButton::Pause => draw_pause_icon(graphics, layout.rect, colors.icon)?,
+        ControlButton::Reset => draw_reset_icon(graphics, layout.rect, colors.icon)?,
     }
 
     Ok(())
@@ -245,7 +242,7 @@ fn current_button_colors(enabled: bool, prominent: bool, hovered: bool, pressed:
     ButtonColors { fill, border, icon }
 }
 
-fn draw_play_icon(hdc: HDC, rect: RECT, color: COLORREF) -> windows::core::Result<()> {
+fn draw_play_icon(graphics: &GdiPlusGraphics, rect: RECT, color: COLORREF) -> windows::core::Result<()> {
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
     let left = rect.left + width * 38 / 100;
@@ -255,15 +252,15 @@ fn draw_play_icon(hdc: HDC, rect: RECT, color: COLORREF) -> windows::core::Resul
     let center_y = (rect.top + rect.bottom) / 2;
 
     let points = [
-        POINT { x: left, y: top },
-        POINT { x: left, y: bottom },
-        POINT { x: right, y: center_y },
+        GpPoint { X: left, Y: top },
+        GpPoint { X: left, Y: bottom },
+        GpPoint { X: right, Y: center_y },
     ];
 
-    fill_polygon(hdc, &points, color)
+    fill_polygon(graphics, &points, color)
 }
 
-fn draw_pause_icon(hdc: HDC, rect: RECT, color: COLORREF) -> windows::core::Result<()> {
+fn draw_pause_icon(graphics: &GdiPlusGraphics, rect: RECT, color: COLORREF) -> windows::core::Result<()> {
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
     let bar_width = (width * 12 / 100).max(6);
@@ -274,58 +271,59 @@ fn draw_pause_icon(hdc: HDC, rect: RECT, color: COLORREF) -> windows::core::Resu
     let right_bar_left = left_bar_left + bar_width + gap;
 
     fill_rect(
-        hdc,
+        graphics,
         rect_from_origin(left_bar_left, top, bar_width, bottom - top),
         color,
     )?;
     fill_rect(
-        hdc,
+        graphics,
         rect_from_origin(right_bar_left, top, bar_width, bottom - top),
         color,
     )
 }
 
-fn draw_reset_icon(hdc: HDC, rect: RECT, color: COLORREF) -> windows::core::Result<()> {
+fn draw_reset_icon(graphics: &GdiPlusGraphics, rect: RECT, color: COLORREF) -> windows::core::Result<()> {
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
     let center_x = (rect.left + rect.right) / 2;
     let center_y = (rect.top + rect.bottom) / 2;
     let radius = width.min(height) * 24 / 100;
+    let pen = GdiPlusPen::new(color, 3.0, true)?;
+    let arc_left = center_x - radius;
+    let arc_top = center_y - radius;
+    let arc_size = radius * 2;
 
-    let pen = unsafe { CreatePen(PS_SOLID, 3, color) };
-    if pen.is_invalid() {
-        return Err(Error::from_win32());
+    unsafe {
+        ensure_gdiplus_ok(GdipDrawArcI(
+            graphics.raw,
+            pen.raw,
+            arc_left,
+            arc_top,
+            arc_size,
+            arc_size,
+            210.0,
+            -305.0,
+        ))?;
     }
-
-    let old_pen = unsafe { SelectObject(hdc, pen.into()) };
-    let hollow_brush = unsafe { GetStockObject(HOLLOW_BRUSH) };
-    let old_brush = unsafe { SelectObject(hdc, hollow_brush) };
 
     let points = arc_points(center_x, center_y, radius, 210.0, -95.0, 14);
-    unsafe {
-        let _ = Polyline(hdc, &points);
-    }
-
     let arrow_tip = *points.last().expect("arc points should not be empty");
     let arrow_points = [
-        arrow_tip,
-        POINT {
-            x: arrow_tip.x - width * 9 / 100,
-            y: arrow_tip.y + height * 4 / 100,
+        GpPoint {
+            X: arrow_tip.x,
+            Y: arrow_tip.y,
         },
-        POINT {
-            x: arrow_tip.x - width * 2 / 100,
-            y: arrow_tip.y + height * 10 / 100,
+        GpPoint {
+            X: arrow_tip.x - width * 9 / 100,
+            Y: arrow_tip.y + height * 4 / 100,
+        },
+        GpPoint {
+            X: arrow_tip.x - width * 2 / 100,
+            Y: arrow_tip.y + height * 10 / 100,
         },
     ];
 
-    unsafe {
-        let _ = SelectObject(hdc, old_brush);
-        let _ = SelectObject(hdc, old_pen);
-        let _ = DeleteObject(pen.into());
-    }
-
-    fill_polygon(hdc, &arrow_points, color)
+    fill_polygon(graphics, &arrow_points, color)
 }
 
 fn arc_points(
@@ -350,60 +348,119 @@ fn arc_points(
     points
 }
 
-fn fill_polygon(hdc: HDC, points: &[POINT], color: COLORREF) -> windows::core::Result<()> {
-    let pen = unsafe { CreatePen(PS_SOLID, 1, color) };
-    if pen.is_invalid() {
-        return Err(Error::from_win32());
-    }
-
-    let brush = unsafe { CreateSolidBrush(color) };
-    if brush.is_invalid() {
-        unsafe {
-            let _ = DeleteObject(pen.into());
-        }
-        return Err(Error::from_win32());
-    }
-
-    let old_pen = unsafe { SelectObject(hdc, pen.into()) };
-    let old_brush = unsafe { SelectObject(hdc, brush.into()) };
-
+fn fill_polygon(graphics: &GdiPlusGraphics, points: &[GpPoint], color: COLORREF) -> windows::core::Result<()> {
+    let brush = GdiPlusBrush::solid(color)?;
     unsafe {
-        let _ = Polygon(hdc, points);
-        let _ = SelectObject(hdc, old_brush);
-        let _ = SelectObject(hdc, old_pen);
-        let _ = DeleteObject(brush.into());
-        let _ = DeleteObject(pen.into());
+        ensure_gdiplus_ok(GdipFillPolygonI(
+            graphics.raw,
+            brush.raw as *mut GpBrush,
+            points.as_ptr(),
+            points.len() as i32,
+            FillModeAlternate,
+        ))
     }
-
-    Ok(())
 }
 
-fn fill_rect(hdc: HDC, rect: RECT, color: COLORREF) -> windows::core::Result<()> {
-    let pen = unsafe { CreatePen(PS_SOLID, 1, color) };
-    if pen.is_invalid() {
-        return Err(Error::from_win32());
-    }
-
-    let brush = unsafe { CreateSolidBrush(color) };
-    if brush.is_invalid() {
-        unsafe {
-            let _ = DeleteObject(pen.into());
-        }
-        return Err(Error::from_win32());
-    }
-
-    let old_pen = unsafe { SelectObject(hdc, pen.into()) };
-    let old_brush = unsafe { SelectObject(hdc, brush.into()) };
-
+fn fill_rect(graphics: &GdiPlusGraphics, rect: RECT, color: COLORREF) -> windows::core::Result<()> {
+    let brush = GdiPlusBrush::solid(color)?;
     unsafe {
-        let _ = Rectangle(hdc, rect.left, rect.top, rect.right, rect.bottom);
-        let _ = SelectObject(hdc, old_brush);
-        let _ = SelectObject(hdc, old_pen);
-        let _ = DeleteObject(brush.into());
-        let _ = DeleteObject(pen.into());
+        ensure_gdiplus_ok(GdipFillRectangleI(
+            graphics.raw,
+            brush.raw as *mut GpBrush,
+            rect.left,
+            rect.top,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+        ))
     }
+}
 
-    Ok(())
+fn ensure_gdiplus_ok(status: Status) -> windows::core::Result<()> {
+    if status.0 == 0 {
+        Ok(())
+    } else {
+        Err(Error::from_win32())
+    }
+}
+
+fn colorref_to_argb(color: COLORREF) -> u32 {
+    let value = color.0;
+    let red = value & 0xFF;
+    let green = (value >> 8) & 0xFF;
+    let blue = (value >> 16) & 0xFF;
+    0xFF00_0000 | (red << 16) | (green << 8) | blue
+}
+
+struct GdiPlusGraphics {
+    raw: *mut GpGraphics,
+}
+
+impl GdiPlusGraphics {
+    fn from_hdc(hdc: HDC) -> windows::core::Result<Self> {
+        let mut raw = std::ptr::null_mut();
+        unsafe {
+            ensure_gdiplus_ok(GdipCreateFromHDC(hdc, &mut raw))?;
+            ensure_gdiplus_ok(GdipSetSmoothingMode(raw, SmoothingModeAntiAlias))?;
+            ensure_gdiplus_ok(GdipSetPixelOffsetMode(raw, PixelOffsetModeHalf))?;
+        }
+        Ok(Self { raw })
+    }
+}
+
+impl Drop for GdiPlusGraphics {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = GdipDeleteGraphics(self.raw);
+        }
+    }
+}
+
+struct GdiPlusBrush {
+    raw: *mut windows::Win32::Graphics::GdiPlus::GpSolidFill,
+}
+
+impl GdiPlusBrush {
+    fn solid(color: COLORREF) -> windows::core::Result<Self> {
+        let mut raw = std::ptr::null_mut();
+        unsafe {
+            ensure_gdiplus_ok(GdipCreateSolidFill(colorref_to_argb(color), &mut raw))?;
+        }
+        Ok(Self { raw })
+    }
+}
+
+impl Drop for GdiPlusBrush {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = GdipDeleteBrush(self.raw as *mut GpBrush);
+        }
+    }
+}
+
+struct GdiPlusPen {
+    raw: *mut GpPen,
+}
+
+impl GdiPlusPen {
+    fn new(color: COLORREF, width: f32, rounded: bool) -> windows::core::Result<Self> {
+        let mut raw = std::ptr::null_mut();
+        unsafe {
+            ensure_gdiplus_ok(GdipCreatePen1(colorref_to_argb(color), width, UnitPixel, &mut raw))?;
+            if rounded {
+                ensure_gdiplus_ok(GdipSetPenLineJoin(raw, LineJoinRound))?;
+                ensure_gdiplus_ok(GdipSetPenLineCap197819(raw, LineCapRound, LineCapRound, DashCapRound))?;
+            }
+        }
+        Ok(Self { raw })
+    }
+}
+
+impl Drop for GdiPlusPen {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = GdipDeletePen(self.raw);
+        }
+    }
 }
 
 #[cfg(test)]
