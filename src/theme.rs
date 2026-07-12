@@ -12,10 +12,14 @@ use windows::core::{Error, HRESULT, Result, w};
 
 static IS_DARK_MODE: AtomicBool = AtomicBool::new(false);
 
-const DARK_BACKGROUND: COLORREF = COLORREF(0x202020);
-const LIGHT_BACKGROUND: COLORREF = COLORREF(0xF0F0F0);
-const DARK_TEXT: COLORREF = COLORREF(0xF0F0F0);
-const LIGHT_TEXT: COLORREF = COLORREF(0x202020);
+const fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
+    COLORREF(r as u32 | ((g as u32) << 8) | ((b as u32) << 16))
+}
+
+const DARK_BACKGROUND: COLORREF = rgb(32, 32, 32);
+const LIGHT_BACKGROUND: COLORREF = rgb(240, 240, 240);
+const DARK_TEXT: COLORREF = rgb(240, 240, 240);
+const LIGHT_TEXT: COLORREF = rgb(32, 32, 32);
 
 pub fn is_dark_mode() -> Result<bool> {
     let mut value = 1u32;
@@ -87,4 +91,8 @@ pub fn current_text_color() -> COLORREF {
     } else {
         LIGHT_TEXT
     }
+}
+
+pub fn is_dark_theme_active() -> bool {
+    IS_DARK_MODE.load(Ordering::Relaxed)
 }

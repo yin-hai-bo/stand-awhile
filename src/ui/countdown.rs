@@ -92,7 +92,7 @@ fn get_countdown_rect(hwnd: HWND, hdc: HDC, text: &mut [u16]) -> windows::core::
 
     let text_height = measured_rect.bottom - measured_rect.top;
     let client_height = client_rect.bottom - client_rect.top;
-    let vertical_center = client_height * 45 / 100;
+    let vertical_center = client_height * 42 / 100;
     let vertical_padding = (text_height / 3).max(12);
     let mut draw_rect = client_rect;
 
@@ -135,5 +135,20 @@ fn format_remaining_time(total_seconds: u32) -> String {
         format!("{minutes:02}:{seconds:02}")
     } else {
         format!("{hours:02}:{minutes:02}:{seconds:02}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_remaining_time;
+
+    #[test]
+    fn formats_minutes_and_seconds() {
+        assert_eq!(format_remaining_time(65), "01:05");
+    }
+
+    #[test]
+    fn formats_hours_when_needed() {
+        assert_eq!(format_remaining_time(3661), "01:01:01");
     }
 }

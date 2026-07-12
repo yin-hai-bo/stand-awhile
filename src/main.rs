@@ -1,5 +1,5 @@
-mod draw;
 mod theme;
+mod ui;
 mod window_proc;
 
 use windows::Win32::{
