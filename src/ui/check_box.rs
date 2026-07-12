@@ -32,10 +32,12 @@ static CHECK_BOX_FONT: Mutex<Option<usize>> = Mutex::new(None);
 static CHECK_BOX_CLASS_REGISTRATION: OnceLock<std::result::Result<(), i32>> = OnceLock::new();
 
 pub type CheckBoxLayout = fn(&CheckBox, HWND, HDC) -> Result<()>;
+type CheckBoxToggleCallback = Box<dyn FnMut(HWND, bool)>;
 
 struct CheckBoxCreateParams {
     text: String,
     checked: bool,
+    on_toggle: CheckBoxToggleCallback,
 }
 
 struct CheckBoxState {
@@ -43,6 +45,7 @@ struct CheckBoxState {
     checked: bool,
     hovered: bool,
     tracking_mouse: bool,
+    on_toggle: CheckBoxToggleCallback,
 }
 
 #[derive(Clone)]
@@ -53,13 +56,17 @@ pub struct CheckBox {
 }
 
 impl CheckBox {
-    pub fn create(parent: HWND, text: &str, checked: bool, layout: CheckBoxLayout) -> Result<Self> {
+    pub fn create<F>(parent: HWND, text: &str, checked: bool, layout: CheckBoxLayout, on_toggle: F) -> Result<Self>
+    where
+        F: FnMut(HWND, bool) + 'static,
+    {
         let instance = current_module_instance()?;
         ensure_check_box_class_registered(instance)?;
 
         let params = Box::new(CheckBoxCreateParams {
             text: text.to_owned(),
             checked,
+            on_toggle: Box::new(on_toggle),
         });
         let raw_params = Box::into_raw(params);
 
@@ -122,6 +129,10 @@ impl CheckBox {
         let width = CHECK_BOX_PADDING_X * 2 + CHECK_BOX_INDICATOR_SIZE + CHECK_BOX_TEXT_GAP + text_width;
         let height = CHECK_BOX_PADDING_Y * 2 + CHECK_BOX_INDICATOR_SIZE.max(text_height);
         Ok((width, height))
+    }
+
+    pub fn is_checked(&self) -> bool {
+        check_box_state(self.hwnd).map(|state| state.checked).unwrap_or(false)
     }
 }
 
@@ -192,6 +203,7 @@ unsafe extern "system" fn check_box_window_proc(hwnd: HWND, msg: u32, wparam: WP
                 checked: params.checked,
                 hovered: false,
                 tracking_mouse: false,
+                on_toggle: params.on_toggle,
             });
 
             unsafe {
@@ -248,6 +260,8 @@ unsafe extern "system" fn check_box_window_proc(hwnd: HWND, msg: u32, wparam: WP
         WM_LBUTTONUP => {
             if let Some(state) = check_box_state_mut(hwnd) {
                 state.checked = !state.checked;
+                let checked = state.checked;
+                (state.on_toggle)(hwnd, checked);
                 unsafe {
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 }

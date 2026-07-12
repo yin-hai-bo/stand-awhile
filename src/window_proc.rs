@@ -7,21 +7,26 @@ use crate::ui::{
     button::{
         ControlButton, button_from_command, layout_control_buttons, refresh_control_buttons, update_control_buttons,
     },
-    check_box::{invalidate_check_box_font, release_check_box_font},
+    check_box::{CheckBox, invalidate_check_box_font, release_check_box_font},
     component::Component,
     countdown_rect, draw_countdown,
     hyper_link_text::{invalidate_hyper_link_text_font, release_hyper_link_text_font},
     invalidate_countdown_font, release_countdown_font,
     theme::{paint_background, refresh_theme},
 };
+use crate::{
+    config::{open_config_directory, show_config_open_error},
+    i18n::{detect_language, main_window_title},
+    tray_icon::{TRAY_MENU_ABOUT_ID, TRAY_MENU_OPEN_CONFIG_ID, TrayIcon, WM_TRAYICON},
+};
 
 use windows::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Gdi::{BeginPaint, EndPaint, GetDC, InvalidateRect, PAINTSTRUCT, ReleaseDC},
     UI::WindowsAndMessaging::{
-        DefWindowProcW, GWLP_USERDATA, GetWindowLongPtrW, KillTimer, PostQuitMessage, SWP_NOACTIVATE, SWP_NOZORDER,
-        SetTimer, SetWindowLongPtrW, SetWindowPos, WM_COMMAND, WM_DESTROY, WM_DPICHANGED, WM_NCDESTROY, WM_PAINT,
-        WM_SETTINGCHANGE, WM_THEMECHANGED, WM_TIMER,
+        DefWindowProcW, GWLP_USERDATA, GetWindowLongPtrW, KillTimer, MB_OK, MessageBoxW, PostQuitMessage, SW_HIDE,
+        SWP_NOACTIVATE, SWP_NOZORDER, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_CLOSE, WM_COMMAND,
+        WM_DESTROY, WM_DPICHANGED, WM_NCDESTROY, WM_PAINT, WM_SETTINGCHANGE, WM_THEMECHANGED, WM_TIMER,
     },
 };
 
@@ -37,6 +42,8 @@ enum TimerState {
 }
 
 pub struct WindowState {
+    pub tray_icon: TrayIcon,
+    pub tray_check_box: CheckBox,
     pub components: Vec<Box<dyn Component>>,
 }
 
@@ -98,8 +105,36 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         WM_COMMAND => {
+            if handle_tray_menu_command(hwnd, wparam) {
+                return LRESULT(0);
+            }
+            if let Some(state) = window_state(hwnd) {
+                if state.tray_icon.handle_command(hwnd, wparam) {
+                    return LRESULT(0);
+                }
+            }
             if let Some(button) = button_from_command(wparam) {
                 activate_button(hwnd, button);
+                return LRESULT(0);
+            }
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
+        WM_TRAYICON => {
+            if let Some(state) = window_state(hwnd) {
+                if state.tray_icon.handle_callback(hwnd, lparam).unwrap_or(false) {
+                    return LRESULT(0);
+                }
+            }
+            LRESULT(0)
+        }
+        WM_CLOSE => {
+            if window_state(hwnd)
+                .map(|state| state.tray_check_box.is_checked())
+                .unwrap_or(false)
+            {
+                unsafe {
+                    let _ = ShowWindow(hwnd, SW_HIDE);
+                }
                 return LRESULT(0);
             }
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
@@ -136,6 +171,9 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         WM_DESTROY => {
+            if let Some(state) = window_state(hwnd) {
+                state.tray_icon.delete(hwnd);
+            }
             unsafe {
                 let _ = KillTimer(Some(hwnd), TIMER_ID);
                 release_check_box_font();
@@ -284,4 +322,37 @@ fn release_window_state(hwnd: HWND) {
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
         }
     }
+}
+
+fn handle_tray_menu_command(hwnd: HWND, wparam: WPARAM) -> bool {
+    match (wparam.0 & 0xFFFF) as usize {
+        TRAY_MENU_OPEN_CONFIG_ID => {
+            if let Err(error) = open_config_directory(hwnd) {
+                show_config_open_error(hwnd, &error);
+            }
+            true
+        }
+        TRAY_MENU_ABOUT_ID => {
+            show_about_dialog(hwnd);
+            true
+        }
+        _ => false,
+    }
+}
+
+fn show_about_dialog(hwnd: HWND) {
+    let title = wide_null(main_window_title(detect_language()));
+    let message = wide_null("Stand Awhile");
+    unsafe {
+        let _ = MessageBoxW(
+            Some(hwnd),
+            windows::core::PCWSTR(message.as_ptr()),
+            windows::core::PCWSTR(title.as_ptr()),
+            MB_OK,
+        );
+    }
+}
+
+fn wide_null(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain([0]).collect()
 }

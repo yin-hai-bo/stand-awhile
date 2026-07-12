@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use windows::Win32::{
     Foundation::HWND,
     System::Com::CoTaskMemFree,
@@ -36,7 +36,7 @@ impl Default for Config {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct ConfigFile {
     period: Option<u32>,
     tray_when_close: Option<bool>,
@@ -54,6 +54,24 @@ impl Config {
             tray_when_close: file.tray_when_close.unwrap_or(DEFAULT_TRAY_WHEN_CLOSE),
         })
     }
+
+    pub fn save(&self) -> Result<()> {
+        let path = ensure_config_file_path()?;
+        let file = ConfigFile {
+            period: Some(self.period),
+            tray_when_close: Some(self.tray_when_close),
+        };
+        let contents = serde_json::to_string_pretty(&file)
+            .map(|json| format!("{json}\n"))
+            .map_err(|error| Error::new(windows::core::HRESULT(0x8000_4005u32 as i32), error.to_string()))?;
+        fs::write(path, contents).map_err(io_error_to_win_error)
+    }
+}
+
+pub fn set_tray_when_close(tray_when_close: bool) -> Result<()> {
+    let mut config = Config::load()?;
+    config.tray_when_close = tray_when_close;
+    config.save()
 }
 
 pub fn open_config_directory(hwnd: HWND) -> Result<()> {

@@ -1,9 +1,10 @@
 mod config;
 mod i18n;
+mod tray_icon;
 mod ui;
 mod window_proc;
 
-use crate::config::{Config, open_config_directory, show_config_open_error};
+use crate::config::{Config, open_config_directory, set_tray_when_close, show_config_open_error};
 use windows::Win32::{
     Foundation::{HINSTANCE, RECT},
     System::LibraryLoader::GetModuleHandleW,
@@ -18,6 +19,7 @@ use windows::Win32::{
 use windows::core::{Error, PCWSTR, Result, w};
 
 use i18n::{detect_language, main_window_title};
+use tray_icon::TrayIcon;
 use ui::{
     button::{create_control_buttons, layout_control_buttons, register_button_class, update_control_buttons},
     check_box::CheckBox,
@@ -117,10 +119,35 @@ fn run(language: i18n::Language) -> Result<()> {
         tray_check_box_text(language),
         config.tray_when_close,
         layout_tray_check_box,
+        |hwnd, checked| {
+            if let Err(error) = set_tray_when_close(checked) {
+                let text: Vec<u16> = error.to_string().encode_utf16().chain([0]).collect();
+                let caption = wide_null(main_window_title(detect_language()));
+                unsafe {
+                    let _ = MessageBoxW(
+                        Some(hwnd),
+                        PCWSTR(text.as_ptr()),
+                        PCWSTR(caption.as_ptr()),
+                        MB_OK | MB_ICONERROR,
+                    );
+                }
+            }
+        },
+    )?;
+    let tray_icon = TrayIcon::create(
+        hwnd,
+        small_icon,
+        main_window_title(language),
+        tray_menu_show_text(language),
+        tray_menu_open_config_text(language),
+        tray_menu_about_text(language),
+        tray_menu_exit_text(language),
     )?;
     attach_window_state(
         hwnd,
         WindowState {
+            tray_icon,
+            tray_check_box: tray_check_box.clone(),
             components: vec![
                 Box::new(config_link) as Box<dyn Component>,
                 Box::new(tray_check_box) as Box<dyn Component>,
@@ -197,6 +224,34 @@ fn tray_check_box_text(language: i18n::Language) -> &'static str {
     match language {
         i18n::Language::Chinese => "关闭时缩小到系统托盘图标",
         i18n::Language::English => "Minimize to system tray when closing",
+    }
+}
+
+fn tray_menu_show_text(language: i18n::Language) -> &'static str {
+    match language {
+        i18n::Language::Chinese => "显示主窗口",
+        i18n::Language::English => "Show window",
+    }
+}
+
+fn tray_menu_exit_text(language: i18n::Language) -> &'static str {
+    match language {
+        i18n::Language::Chinese => "退出",
+        i18n::Language::English => "Exit",
+    }
+}
+
+fn tray_menu_open_config_text(language: i18n::Language) -> &'static str {
+    match language {
+        i18n::Language::Chinese => "打开配置目录",
+        i18n::Language::English => "Open config folder",
+    }
+}
+
+fn tray_menu_about_text(language: i18n::Language) -> &'static str {
+    match language {
+        i18n::Language::Chinese => "关于",
+        i18n::Language::English => "About",
     }
 }
 
