@@ -1,3 +1,4 @@
+mod i18n;
 mod ui;
 mod window_proc;
 
@@ -13,6 +14,7 @@ use windows::Win32::{
 };
 use windows::core::{Error, PCWSTR, Result, w};
 
+use i18n::{detect_language, main_window_title};
 use ui::{
     button::{create_control_buttons, layout_control_buttons, register_button_class, update_control_buttons},
     gdi_plus::GdiPlus,
@@ -24,15 +26,25 @@ const WINDOW_WIDTH: i32 = 800;
 const WINDOW_HEIGHT: i32 = 533;
 
 fn main() {
-    if let Err(message) = run() {
+    let language = detect_language();
+    let app_title = main_window_title(language);
+
+    if let Err(message) = run(language) {
         unsafe {
             let text: Vec<u16> = message.to_string().encode_utf16().chain([0]).collect();
-            let _ = MessageBoxW(None, PCWSTR(text.as_ptr()), w!("stand-awhile"), MB_OK | MB_ICONERROR);
+            let caption = wide_null(app_title);
+            let _ = MessageBoxW(
+                None,
+                PCWSTR(text.as_ptr()),
+                PCWSTR(caption.as_ptr()),
+                MB_OK | MB_ICONERROR,
+            );
         }
     }
 }
 
-fn run() -> Result<()> {
+fn run(language: i18n::Language) -> Result<()> {
+    let app_title = wide_null(main_window_title(language));
     let instance: HINSTANCE = unsafe { GetModuleHandleW(None)? }.into();
     let class_name = w!("YHB-StandAwhileWindowClass");
 
@@ -59,7 +71,7 @@ fn run() -> Result<()> {
         CreateWindowExW(
             ex_style,
             class_name,
-            w!("stand-awhile"),
+            PCWSTR(app_title.as_ptr()),
             style,
             window_x,
             window_y,
@@ -126,4 +138,8 @@ fn centered_window_position(
     let y = (screen_height - window_height) / 2;
 
     Ok((x, y))
+}
+
+fn wide_null(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain([0]).collect()
 }
