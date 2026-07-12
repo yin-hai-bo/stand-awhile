@@ -7,9 +7,10 @@ use windows::Win32::{
     System::LibraryLoader::GetModuleHandleW,
     UI::WindowsAndMessaging::{
         AdjustWindowRectEx, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DispatchMessageW, GetMessageW, GetSystemMetrics,
-        HMENU, IDC_ARROW, IDI_APPLICATION, LoadCursorW, LoadIconW, MB_ICONERROR, MB_OK, MSG, MessageBoxW,
-        RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SW_SHOW, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WNDCLASSW,
-        WS_CAPTION, WS_CLIPCHILDREN, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
+        HICON, HMENU, IDC_ARROW, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTCOLOR, LoadCursorW, LoadIconW, LoadImageW,
+        MB_ICONERROR, MB_OK, MSG, MessageBoxW, RegisterClassExW, SM_CXICON, SM_CXSCREEN, SM_CXSMICON, SM_CYICON,
+        SM_CYSCREEN, SM_CYSMICON, SW_SHOW, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WNDCLASSEXW, WS_CAPTION,
+        WS_CLIPCHILDREN, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
     },
 };
 use windows::core::{Error, PCWSTR, Result, w};
@@ -24,6 +25,7 @@ use window_proc::window_proc;
 
 const WINDOW_WIDTH: i32 = 800;
 const WINDOW_HEIGHT: i32 = 533;
+const APP_ICON_RESOURCE_ID: usize = 1;
 
 fn main() {
     let language = detect_language();
@@ -47,18 +49,21 @@ fn run(language: i18n::Language) -> Result<()> {
     let app_title = wide_null(main_window_title(language));
     let instance: HINSTANCE = unsafe { GetModuleHandleW(None)? }.into();
     let class_name = w!("YHB-StandAwhileWindowClass");
+    let (large_icon, small_icon) = load_app_icons(instance);
 
-    let wnd_class = WNDCLASSW {
+    let wnd_class = WNDCLASSEXW {
+        cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
         style: CS_HREDRAW | CS_VREDRAW,
         lpfnWndProc: Some(window_proc),
         hInstance: instance,
         lpszClassName: class_name,
         hCursor: unsafe { LoadCursorW(None, IDC_ARROW)? },
-        hIcon: unsafe { LoadIconW(None, IDI_APPLICATION)? },
+        hIcon: large_icon,
+        hIconSm: small_icon,
         ..Default::default()
     };
 
-    if unsafe { RegisterClassW(&wnd_class) } == 0 {
+    if unsafe { RegisterClassExW(&wnd_class) } == 0 {
         return Err(Error::from_win32());
     }
 
@@ -142,4 +147,22 @@ fn centered_window_position(
 
 fn wide_null(value: &str) -> Vec<u16> {
     value.encode_utf16().chain([0]).collect()
+}
+
+fn load_app_icons(instance: HINSTANCE) -> (HICON, HICON) {
+    let large_icon = load_icon_with_size(instance, unsafe { GetSystemMetrics(SM_CXICON) }, unsafe {
+        GetSystemMetrics(SM_CYICON)
+    });
+    let small_icon = load_icon_with_size(instance, unsafe { GetSystemMetrics(SM_CXSMICON) }, unsafe {
+        GetSystemMetrics(SM_CYSMICON)
+    });
+
+    let fallback = unsafe { LoadIconW(None, IDI_APPLICATION).unwrap_or_default() };
+    (large_icon.unwrap_or(fallback), small_icon.unwrap_or(fallback))
+}
+
+fn load_icon_with_size(instance: HINSTANCE, width: i32, height: i32) -> Option<HICON> {
+    let resource = PCWSTR(APP_ICON_RESOURCE_ID as *const u16);
+    let handle = unsafe { LoadImageW(Some(instance), resource, IMAGE_ICON, width, height, LR_DEFAULTCOLOR).ok()? };
+    Some(HICON(handle.0))
 }
