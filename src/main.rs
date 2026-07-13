@@ -62,6 +62,7 @@ fn run() -> Result<()> {
 
     let config = Config::load()?;
     let language = config.language();
+    let theme = config.theme();
     set_initial_remaining_seconds(config.period);
 
     let app_title = wide_null(main_window_title(language));
@@ -152,6 +153,7 @@ fn run() -> Result<()> {
         hwnd,
         WindowState {
             language,
+            theme,
             tray_icon,
             tray_check_box: tray_check_box.clone(),
             components: vec![
@@ -163,7 +165,7 @@ fn run() -> Result<()> {
     layout_control_buttons(hwnd)?;
     layout_window_state(hwnd)?;
     update_control_buttons(hwnd, true, false, false)?;
-    apply_theme(hwnd)?;
+    apply_theme(hwnd, theme)?;
 
     unsafe {
         let _ = ShowWindow(hwnd, SW_SHOW);

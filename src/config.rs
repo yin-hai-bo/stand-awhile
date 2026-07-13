@@ -13,6 +13,7 @@ use windows::Win32::{
 use windows::core::{Error, HRESULT, PCWSTR, PWSTR, Result, w};
 
 use crate::i18n::{Language, main_window_title, resolve_language};
+use crate::ui::theme::{Theme, resolve_theme};
 
 const APP_DIRECTORY_NAME: &str = "yhb";
 const APP_SUBDIRECTORY_NAME: &str = "stand-awhile";
@@ -21,12 +22,14 @@ const DEFAULT_CONFIG_CONTENTS: &str = "{}\n";
 const DEFAULT_PERIOD_SECONDS: u32 = 20 * 60;
 const DEFAULT_TRAY_WHEN_CLOSE: bool = false;
 const DEFAULT_LANGUAGE: &str = "auto";
+const DEFAULT_THEME: &str = "system";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
     pub period: u32,
     pub tray_when_close: bool,
     pub language: String,
+    pub theme: String,
 }
 
 impl Default for Config {
@@ -35,6 +38,7 @@ impl Default for Config {
             period: DEFAULT_PERIOD_SECONDS,
             tray_when_close: DEFAULT_TRAY_WHEN_CLOSE,
             language: DEFAULT_LANGUAGE.to_owned(),
+            theme: DEFAULT_THEME.to_owned(),
         }
     }
 }
@@ -44,6 +48,7 @@ struct ConfigFile {
     period: Option<u32>,
     tray_when_close: Option<bool>,
     language: Option<String>,
+    theme: Option<String>,
 }
 
 impl Config {
@@ -57,11 +62,16 @@ impl Config {
             period: file.period.unwrap_or(DEFAULT_PERIOD_SECONDS),
             tray_when_close: file.tray_when_close.unwrap_or(DEFAULT_TRAY_WHEN_CLOSE),
             language: file.language.unwrap_or_else(|| DEFAULT_LANGUAGE.to_owned()),
+            theme: file.theme.unwrap_or_else(|| DEFAULT_THEME.to_owned()),
         })
     }
 
     pub fn language(&self) -> crate::i18n::Language {
         resolve_language(&self.language)
+    }
+
+    pub fn theme(&self) -> Theme {
+        resolve_theme(&self.theme)
     }
 
     pub fn save(&self) -> Result<()> {
@@ -70,6 +80,7 @@ impl Config {
             period: Some(self.period),
             tray_when_close: Some(self.tray_when_close),
             language: Some(self.language.clone()),
+            theme: Some(self.theme.clone()),
         };
         let contents = serde_json::to_string_pretty(&file)
             .map(|json| format!("{json}\n"))
@@ -193,5 +204,6 @@ mod tests {
         assert_eq!(config.period, 20 * 60);
         assert!(!config.tray_when_close);
         assert_eq!(config.language, "auto");
+        assert_eq!(config.theme, "system");
     }
 }

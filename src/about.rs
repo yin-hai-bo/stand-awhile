@@ -4,7 +4,7 @@ use crate::{
     i18n::Language,
     ui::{
         hyper_link_text::HyperLinkText,
-        theme::{apply_theme, current_text_color, paint_background, refresh_theme},
+        theme::{Theme, apply_theme, current_text_color, paint_background, refresh_theme},
     },
 };
 use windows::Win32::{
@@ -42,10 +42,11 @@ static ABOUT_CLASS_REGISTRATION: OnceLock<std::result::Result<(), i32>> = OnceLo
 
 struct AboutState {
     language: Language,
+    theme: Theme,
     github_link: HyperLinkText,
 }
 
-pub fn show_about_window(owner: HWND, language: Language) -> Result<()> {
+pub fn show_about_window(owner: HWND, language: Language, theme: Theme) -> Result<()> {
     let instance = current_module_instance()?;
     ensure_about_class_registered(instance)?;
 
@@ -80,13 +81,17 @@ pub fn show_about_window(owner: HWND, language: Language) -> Result<()> {
         about_link_layout,
     )?;
 
-    let state = Box::new(AboutState { language, github_link });
+    let state = Box::new(AboutState {
+        language,
+        theme,
+        github_link,
+    });
     unsafe {
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
     }
 
     layout_about_window(hwnd)?;
-    apply_theme(hwnd)?;
+    apply_theme(hwnd, theme)?;
     Ok(())
 }
 
@@ -109,8 +114,8 @@ unsafe extern "system" fn about_window_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             LRESULT(0)
         }
         WM_SETTINGCHANGE | WM_THEMECHANGED => {
-            refresh_theme(hwnd);
             if let Some(state) = about_state(hwnd) {
+                refresh_theme(hwnd, state.theme);
                 state.github_link.invalidate();
             }
             LRESULT(0)

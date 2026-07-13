@@ -13,7 +13,7 @@ use crate::ui::{
     countdown_rect, draw_countdown,
     hyper_link_text::{invalidate_hyper_link_text_font, release_hyper_link_text_font},
     invalidate_countdown_font, release_countdown_font,
-    theme::{paint_background, refresh_theme},
+    theme::{Theme, paint_background, refresh_theme},
 };
 use crate::{
     config::{open_config_directory, show_config_open_error},
@@ -46,6 +46,7 @@ enum TimerState {
 
 pub struct WindowState {
     pub language: Language,
+    pub theme: Theme,
     pub tray_icon: TrayIcon,
     pub tray_check_box: CheckBox,
     pub components: Vec<Box<dyn Component>>,
@@ -170,7 +171,9 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
             LRESULT(0)
         }
         WM_SETTINGCHANGE | WM_THEMECHANGED => {
-            refresh_theme(hwnd);
+            if let Some(state) = window_state(hwnd) {
+                refresh_theme(hwnd, state.theme);
+            }
             let _ = refresh_control_buttons(hwnd);
             refresh_window_state(hwnd);
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
@@ -380,10 +383,10 @@ fn handle_tray_menu_command(hwnd: HWND, wparam: WPARAM) -> bool {
             true
         }
         TRAY_MENU_ABOUT_ID => {
-            let language = window_state(hwnd)
-                .map(|state| state.language)
-                .unwrap_or(Language::English);
-            let _ = show_about_window(hwnd, language);
+            let (language, theme) = window_state(hwnd)
+                .map(|state| (state.language, state.theme))
+                .unwrap_or((Language::English, Theme::System));
+            let _ = show_about_window(hwnd, language, theme);
             true
         }
         _ => false,
