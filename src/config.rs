@@ -12,7 +12,7 @@ use windows::Win32::{
 };
 use windows::core::{Error, HRESULT, PCWSTR, PWSTR, Result, w};
 
-use crate::i18n::{detect_language, main_window_title};
+use crate::i18n::{Language, main_window_title, resolve_language};
 
 const APP_DIRECTORY_NAME: &str = "yhb";
 const APP_SUBDIRECTORY_NAME: &str = "stand-awhile";
@@ -20,11 +20,13 @@ const CONFIG_FILE_NAME: &str = "config.json";
 const DEFAULT_CONFIG_CONTENTS: &str = "{}\n";
 const DEFAULT_PERIOD_SECONDS: u32 = 20 * 60;
 const DEFAULT_TRAY_WHEN_CLOSE: bool = false;
+const DEFAULT_LANGUAGE: &str = "auto";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
     pub period: u32,
     pub tray_when_close: bool,
+    pub language: String,
 }
 
 impl Default for Config {
@@ -32,6 +34,7 @@ impl Default for Config {
         Self {
             period: DEFAULT_PERIOD_SECONDS,
             tray_when_close: DEFAULT_TRAY_WHEN_CLOSE,
+            language: DEFAULT_LANGUAGE.to_owned(),
         }
     }
 }
@@ -40,6 +43,7 @@ impl Default for Config {
 struct ConfigFile {
     period: Option<u32>,
     tray_when_close: Option<bool>,
+    language: Option<String>,
 }
 
 impl Config {
@@ -52,7 +56,12 @@ impl Config {
         Ok(Self {
             period: file.period.unwrap_or(DEFAULT_PERIOD_SECONDS),
             tray_when_close: file.tray_when_close.unwrap_or(DEFAULT_TRAY_WHEN_CLOSE),
+            language: file.language.unwrap_or_else(|| DEFAULT_LANGUAGE.to_owned()),
         })
+    }
+
+    pub fn language(&self) -> crate::i18n::Language {
+        resolve_language(&self.language)
     }
 
     pub fn save(&self) -> Result<()> {
@@ -60,6 +69,7 @@ impl Config {
         let file = ConfigFile {
             period: Some(self.period),
             tray_when_close: Some(self.tray_when_close),
+            language: Some(self.language.clone()),
         };
         let contents = serde_json::to_string_pretty(&file)
             .map(|json| format!("{json}\n"))
@@ -95,8 +105,8 @@ pub fn open_config_directory(hwnd: HWND) -> Result<()> {
     Ok(())
 }
 
-pub fn show_config_open_error(hwnd: HWND, error: &windows::core::Error) {
-    let title = wide_null(main_window_title(detect_language()));
+pub fn show_config_open_error(hwnd: HWND, error: &windows::core::Error, language: Language) {
+    let title = wide_null(main_window_title(language));
     let message = wide_null(&error.to_string());
 
     unsafe {
@@ -182,5 +192,6 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.period, 20 * 60);
         assert!(!config.tray_when_close);
+        assert_eq!(config.language, "auto");
     }
 }

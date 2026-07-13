@@ -43,7 +43,7 @@ fn main() {
     let language = detect_language();
     let app_title = main_window_title(language);
 
-    if let Err(message) = run(language) {
+    if let Err(message) = run() {
         unsafe {
             let text: Vec<u16> = message.to_string().encode_utf16().chain([0]).collect();
             let caption = wide_null(app_title);
@@ -57,10 +57,11 @@ fn main() {
     }
 }
 
-fn run(language: i18n::Language) -> Result<()> {
+fn run() -> Result<()> {
     let _ = toast::initialize();
 
     let config = Config::load()?;
+    let language = config.language();
     set_initial_remaining_seconds(config.period);
 
     let app_title = wide_null(main_window_title(language));
@@ -111,9 +112,9 @@ fn run(language: i18n::Language) -> Result<()> {
     let config_link = HyperLinkText::create(
         hwnd,
         config_link_text(language),
-        |hwnd| {
+        move |hwnd| {
             if let Err(error) = open_config_directory(hwnd) {
-                show_config_open_error(hwnd, &error);
+                show_config_open_error(hwnd, &error, language);
             }
         },
         layout_config_link,
@@ -123,10 +124,10 @@ fn run(language: i18n::Language) -> Result<()> {
         tray_check_box_text(language),
         config.tray_when_close,
         layout_tray_check_box,
-        |hwnd, checked| {
+        move |hwnd, checked| {
             if let Err(error) = set_tray_when_close(checked) {
                 let text: Vec<u16> = error.to_string().encode_utf16().chain([0]).collect();
-                let caption = wide_null(main_window_title(detect_language()));
+                let caption = wide_null(main_window_title(language));
                 unsafe {
                     let _ = MessageBoxW(
                         Some(hwnd),
@@ -150,6 +151,7 @@ fn run(language: i18n::Language) -> Result<()> {
     attach_window_state(
         hwnd,
         WindowState {
+            language,
             tray_icon,
             tray_check_box: tray_check_box.clone(),
             components: vec![

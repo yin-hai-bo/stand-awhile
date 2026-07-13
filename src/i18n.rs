@@ -13,6 +13,17 @@ pub fn detect_language() -> Language {
     detect_language_from_lang_id(lang_id)
 }
 
+pub fn resolve_language(configured_language: &str) -> Language {
+    let language = configured_language.trim().to_ascii_lowercase();
+    if language.is_empty() || language == "auto" {
+        detect_language()
+    } else if language == "zh" || language.starts_with("zh-") {
+        Language::Chinese
+    } else {
+        Language::English
+    }
+}
+
 pub fn main_window_title(language: Language) -> &'static str {
     match language {
         Language::Chinese => "站一站",
@@ -45,7 +56,7 @@ fn detect_language_from_lang_id(lang_id: u16) -> Language {
 
 #[cfg(test)]
 mod tests {
-    use super::{Language, detect_language_from_lang_id};
+    use super::{Language, detect_language_from_lang_id, resolve_language};
 
     #[test]
     fn detects_chinese_as_chinese() {
@@ -57,5 +68,17 @@ mod tests {
     fn falls_back_to_english_for_non_chinese_languages() {
         assert_eq!(detect_language_from_lang_id(0x0409), Language::English);
         assert_eq!(detect_language_from_lang_id(0x0411), Language::English);
+    }
+
+    #[test]
+    fn resolves_configured_chinese_language() {
+        assert_eq!(resolve_language("zh"), Language::Chinese);
+        assert_eq!(resolve_language("zh-CN"), Language::Chinese);
+    }
+
+    #[test]
+    fn resolves_configured_non_chinese_language_to_english() {
+        assert_eq!(resolve_language("en"), Language::English);
+        assert_eq!(resolve_language("ja-JP"), Language::English);
     }
 }

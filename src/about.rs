@@ -1,7 +1,7 @@
 use std::sync::OnceLock;
 
 use crate::{
-    i18n::{Language, detect_language},
+    i18n::Language,
     ui::{
         hyper_link_text::HyperLinkText,
         theme::{apply_theme, current_text_color, paint_background, refresh_theme},
@@ -45,11 +45,10 @@ struct AboutState {
     github_link: HyperLinkText,
 }
 
-pub fn show_about_window(owner: HWND) -> Result<()> {
+pub fn show_about_window(owner: HWND, language: Language) -> Result<()> {
     let instance = current_module_instance()?;
     ensure_about_class_registered(instance)?;
 
-    let language = detect_language();
     let title = wide_null(about_window_title(language));
     let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_VISIBLE;
     let ex_style = WINDOW_EX_STYLE::default();

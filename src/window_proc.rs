@@ -17,7 +17,7 @@ use crate::ui::{
 };
 use crate::{
     config::{open_config_directory, show_config_open_error},
-    i18n::{detect_language, reminder_notification_message, reminder_notification_title},
+    i18n::{Language, reminder_notification_message, reminder_notification_title},
     toast,
     tray_icon::{TRAY_MENU_ABOUT_ID, TRAY_MENU_OPEN_CONFIG_ID, TrayIcon, WM_TRAYICON},
 };
@@ -45,6 +45,7 @@ enum TimerState {
 }
 
 pub struct WindowState {
+    pub language: Language,
     pub tray_icon: TrayIcon,
     pub tray_check_box: CheckBox,
     pub components: Vec<Box<dyn Component>>,
@@ -289,7 +290,7 @@ fn notify_timer_finished(hwnd: HWND) {
         return;
     };
 
-    let language = detect_language();
+    let language = state.language;
     if toast::show(
         reminder_notification_title(language),
         reminder_notification_message(language),
@@ -371,12 +372,18 @@ fn handle_tray_menu_command(hwnd: HWND, wparam: WPARAM) -> bool {
     match (wparam.0 & 0xFFFF) as usize {
         TRAY_MENU_OPEN_CONFIG_ID => {
             if let Err(error) = open_config_directory(hwnd) {
-                show_config_open_error(hwnd, &error);
+                let language = window_state(hwnd)
+                    .map(|state| state.language)
+                    .unwrap_or(Language::English);
+                show_config_open_error(hwnd, &error, language);
             }
             true
         }
         TRAY_MENU_ABOUT_ID => {
-            let _ = show_about_window(hwnd);
+            let language = window_state(hwnd)
+                .map(|state| state.language)
+                .unwrap_or(Language::English);
+            let _ = show_about_window(hwnd, language);
             true
         }
         _ => false,
