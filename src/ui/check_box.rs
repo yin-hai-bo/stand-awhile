@@ -25,8 +25,10 @@ use windows::core::{Error, Result, w};
 const CHECK_BOX_CLASS_NAME: windows::core::PCWSTR = w!("YHB-StandAwhileCheckBox");
 const CHECK_BOX_INDICATOR_SIZE: i32 = 16;
 const CHECK_BOX_TEXT_GAP: i32 = 10;
-const CHECK_BOX_PADDING_X: i32 = 2;
-const CHECK_BOX_PADDING_Y: i32 = 4;
+const CHECK_BOX_PADDING_X: i32 = 6;
+const CHECK_BOX_PADDING_Y: i32 = 6;
+const CHECK_BOX_MEASURE_EXTRA_WIDTH: i32 = 4;
+const CHECK_BOX_MEASURE_EXTRA_HEIGHT: i32 = 4;
 
 static CHECK_BOX_FONT: Mutex<Option<usize>> = Mutex::new(None);
 static CHECK_BOX_CLASS_REGISTRATION: OnceLock<std::result::Result<(), i32>> = OnceLock::new();
@@ -372,6 +374,7 @@ fn draw_check_mark(hdc: HDC, rect: RECT) -> Result<()> {
 fn draw_check_box_text(hdc: HDC, client_rect: &RECT, text: &str) -> Result<()> {
     let mut text_rect = *client_rect;
     text_rect.left += CHECK_BOX_PADDING_X + CHECK_BOX_INDICATOR_SIZE + CHECK_BOX_TEXT_GAP;
+    text_rect.right -= CHECK_BOX_PADDING_X;
     let font = get_check_box_font(hdc)?;
     let old_font = unsafe { SelectObject(hdc, font.into()) };
     let mut wide_text = wide_text(text);
@@ -406,6 +409,9 @@ fn measure_text_rect(hdc: HDC, text: &str) -> Result<RECT> {
         );
         let _ = SelectObject(hdc, old_font);
     }
+
+    rect.right += CHECK_BOX_MEASURE_EXTRA_WIDTH;
+    rect.bottom += CHECK_BOX_MEASURE_EXTRA_HEIGHT;
 
     Ok(rect)
 }

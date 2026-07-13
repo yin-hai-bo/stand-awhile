@@ -238,7 +238,7 @@ fn tray_check_box_text(language: i18n::Language) -> &'static str {
 fn tray_menu_show_text(language: i18n::Language) -> &'static str {
     match language {
         i18n::Language::Chinese => "显示主窗口",
-        i18n::Language::English => "Show window",
+        i18n::Language::English => "Show main window",
     }
 }
 

@@ -6,9 +6,9 @@ use windows::Win32::{
             NIM_SETVERSION, NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW,
         },
         WindowsAndMessaging::{
-            AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, HICON, MF_STRING, SW_RESTORE, SW_SHOW,
-            SetForegroundWindow, ShowWindow, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, TrackPopupMenu, WM_APP,
-            WM_COMMAND, WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_RBUTTONUP,
+            AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, HICON, MF_SEPARATOR, MF_STRING, SW_RESTORE,
+            SW_SHOW, SetForegroundWindow, ShowWindow, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, TrackPopupMenu,
+            WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_RBUTTONUP,
         },
     },
 };
@@ -125,6 +125,7 @@ impl TrayIcon {
                 PCWSTR(open_config_text.as_ptr()),
             )?;
             AppendMenuW(menu, MF_STRING, TRAY_MENU_ABOUT_ID, PCWSTR(about_text.as_ptr()))?;
+            AppendMenuW(menu, MF_SEPARATOR, 0, None)?;
             AppendMenuW(menu, MF_STRING, TRAY_MENU_EXIT_ID, PCWSTR(exit_text.as_ptr()))?;
         }
 

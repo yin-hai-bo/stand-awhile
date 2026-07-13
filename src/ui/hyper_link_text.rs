@@ -23,11 +23,11 @@ use windows::Win32::{
 use windows::core::{Error, Result, w};
 
 const HYPER_LINK_TEXT_CLASS_NAME: windows::core::PCWSTR = w!("YHB-StandAwhileHyperLinkText");
-const LINK_PADDING_X: i32 = 6;
-const LINK_PADDING_TOP: i32 = 5;
-const LINK_PADDING_BOTTOM: i32 = 8;
-const LINK_MEASURE_EXTRA_WIDTH: i32 = 2;
-const LINK_MEASURE_EXTRA_HEIGHT: i32 = 2;
+const LINK_PADDING_X: i32 = 10;
+const LINK_PADDING_TOP: i32 = 7;
+const LINK_PADDING_BOTTOM: i32 = 10;
+const LINK_MEASURE_EXTRA_WIDTH: i32 = 4;
+const LINK_MEASURE_EXTRA_HEIGHT: i32 = 4;
 
 static LINK_FONT: Mutex<Option<usize>> = Mutex::new(None);
 static HYPER_LINK_TEXT_CLASS_REGISTRATION: OnceLock<std::result::Result<(), i32>> = OnceLock::new();
@@ -319,7 +319,7 @@ unsafe extern "system" fn hyper_link_text_window_proc(hwnd: HWND, msg: u32, wpar
 fn draw_hyper_link_text(hwnd: HWND, hdc: HDC, hovered: bool) -> Result<()> {
     let state = hyper_link_state(hwnd).ok_or_else(Error::from_win32)?;
     let mut text = wide_text(&state.text);
-    let mut rect = client_rect(hwnd)?;
+    let mut text_rect = client_rect(hwnd)?;
     let font = get_link_font(hdc)?;
     let old_font = unsafe { SelectObject(hdc, font.into()) };
 
@@ -329,7 +329,7 @@ fn draw_hyper_link_text(hwnd: HWND, hdc: HDC, hovered: bool) -> Result<()> {
         let _ = DrawTextW(
             hdc,
             text.as_mut_slice(),
-            &mut rect,
+            &mut text_rect,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE,
         );
         let _ = SelectObject(hdc, old_font);

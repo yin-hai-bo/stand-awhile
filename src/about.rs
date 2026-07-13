@@ -20,9 +20,11 @@ use windows::Win32::{
         Shell::ShellExecuteW,
         WindowsAndMessaging::{
             AdjustWindowRectEx, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA,
-            GetWindowLongPtrW, GetWindowRect, IDC_ARROW, LoadCursorW, RegisterClassW, SW_SHOWNORMAL, SetWindowLongPtrW,
-            WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_ERASEBKGND, WM_NCDESTROY, WM_PAINT,
-            WM_SETTINGCHANGE, WM_SIZE, WM_THEMECHANGED, WNDCLASSW, WS_CAPTION, WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
+            GetSystemMetrics, GetWindowLongPtrW, GetWindowRect, HICON, IDC_ARROW, IDI_APPLICATION, IMAGE_ICON,
+            LR_DEFAULTCOLOR, LoadCursorW, LoadIconW, LoadImageW, RegisterClassW, SM_CXICON, SM_CYICON, SW_SHOWNORMAL,
+            SetWindowLongPtrW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_ERASEBKGND,
+            WM_NCDESTROY, WM_PAINT, WM_SETTINGCHANGE, WM_SIZE, WM_THEMECHANGED, WNDCLASSW, WS_CAPTION, WS_OVERLAPPED,
+            WS_SYSMENU, WS_VISIBLE,
         },
     },
 };
@@ -37,6 +39,7 @@ const CONTENT_RIGHT: i32 = 28;
 const GITHUB_LABEL_TOP: i32 = 164;
 const GITHUB_LABEL_GAP: i32 = 6;
 const GITHUB_URL: &str = "https://github.com/yin-hai-bo/stand-awhile";
+const APP_ICON_RESOURCE_ID: usize = 1;
 
 static ABOUT_CLASS_REGISTRATION: OnceLock<std::result::Result<(), i32>> = OnceLock::new();
 
@@ -142,6 +145,7 @@ fn register_about_class(instance: HINSTANCE) -> Result<()> {
         hInstance: instance,
         lpszClassName: ABOUT_CLASS_NAME,
         hCursor: unsafe { LoadCursorW(None, IDC_ARROW)? },
+        hIcon: load_app_icon(instance),
         ..Default::default()
     };
 
@@ -161,6 +165,24 @@ fn ensure_about_class_registered(instance: HINSTANCE) -> Result<()> {
 
 fn current_module_instance() -> Result<HINSTANCE> {
     Ok(unsafe { GetModuleHandleW(None)? }.into())
+}
+
+fn load_app_icon(instance: HINSTANCE) -> HICON {
+    let resource = PCWSTR(APP_ICON_RESOURCE_ID as *const u16);
+    let icon = unsafe {
+        LoadImageW(
+            Some(instance),
+            resource,
+            IMAGE_ICON,
+            GetSystemMetrics(SM_CXICON),
+            GetSystemMetrics(SM_CYICON),
+            LR_DEFAULTCOLOR,
+        )
+        .ok()
+    };
+
+    icon.map(|handle| HICON(handle.0))
+        .unwrap_or_else(|| unsafe { LoadIconW(None, IDI_APPLICATION).unwrap_or_default() })
 }
 
 fn centered_window_rect(owner: HWND, style: WINDOW_STYLE, ex_style: WINDOW_EX_STYLE) -> Result<(i32, i32, i32, i32)> {

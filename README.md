@@ -26,16 +26,14 @@ Designed to be unobtrusive and minimal, it helps reduce the health risks of prol
 
 ## 📸 Screenshot
 
-> *(Add a screenshot of the tray icon and reminder popup here)*
-
-![StandAwhile Screenshot](assets/screenshot.png)
+![StandAwhile Screenshot](docs/images/screenshot.png)
 
 ---
 
 ## 🚀 Getting Started
 
 ### Download & Run
-1. Go to the [Releases](https://github.com/yourname/stand-awhile/releases) page
+1. Go to the [Releases](https://github.com/yin-hai-bo/stand-awhile/releases) page
 2. Download the latest `StandAwhile.zip`
 3. Extract and run `StandAwhile.exe`
 4. The app will minimize to the system tray
@@ -43,3 +41,36 @@ Designed to be unobtrusive and minimal, it helps reduce the health risks of prol
 Note: Windows toast notifications can be suppressed by system settings such as Do Not Disturb / Focus Assist.
 
 ### Build from Source
+
+Prerequisites:
+
+- Windows 10 or later
+- Rust toolchain installed via [rustup](https://rustup.rs/)
+- Microsoft C++ Build Tools, installed through Visual Studio Build Tools or Visual Studio
+
+Clone and build:
+
+```powershell
+git clone https://github.com/yin-hai-bo/stand-awhile.git
+cd stand-awhile
+cargo build --release
+```
+
+Run from source:
+
+```powershell
+cargo run
+```
+
+The release executable will be generated at:
+
+```text
+target/release/stand-awhile.exe
+```
+
+For development checks, run:
+
+```powershell
+cargo fmt
+cargo test
+```

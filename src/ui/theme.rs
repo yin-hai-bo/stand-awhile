@@ -25,7 +25,7 @@ const fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
 
 const DARK_BACKGROUND: COLORREF = rgb(32, 32, 32);
 const LIGHT_BACKGROUND: COLORREF = rgb(240, 240, 240);
-const DARK_TEXT: COLORREF = rgb(240, 240, 240);
+const DARK_TEXT: COLORREF = rgb(250, 250, 250);
 const LIGHT_TEXT: COLORREF = rgb(32, 32, 32);
 
 pub fn is_dark_mode() -> Result<bool> {
