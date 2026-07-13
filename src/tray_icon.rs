@@ -2,8 +2,8 @@ use windows::Win32::{
     Foundation::{HWND, LPARAM, POINT, WPARAM},
     UI::{
         Shell::{
-            NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION,
-            NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW,
+            NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE, NIM_MODIFY,
+            NIM_SETVERSION, NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW,
         },
         WindowsAndMessaging::{
             AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, HICON, MF_STRING, SW_RESTORE, SW_SHOW,
@@ -154,7 +154,7 @@ fn notify_icon_data(hwnd: HWND, icon: HICON, tooltip: &str) -> NOTIFYICONDATAW {
         cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
         hWnd: hwnd,
         uID: TRAY_ICON_ID,
-        uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP,
+        uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP,
         uCallbackMessage: WM_TRAYICON,
         hIcon: icon,
         ..Default::default()
