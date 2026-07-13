@@ -5,10 +5,10 @@ use crate::ui::theme::{current_text_color, is_dark_theme_active, paint_backgroun
 use windows::Win32::{
     Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Gdi::{
-        ANTIALIASED_QUALITY, BeginPaint, CLIP_DEFAULT_PRECIS, CreateFontW, CreatePen, CreateSolidBrush,
-        DEFAULT_CHARSET, DT_CALCRECT, DT_LEFT, DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW, EndPaint, FF_SWISS,
-        GetDeviceCaps, HDC, HFONT, InvalidateRect, LOGPIXELSY, LineTo, MoveToEx, OUT_DEFAULT_PRECIS, PAINTSTRUCT,
-        PS_SOLID, Rectangle, SelectObject, SetBkMode, SetTextColor, TRANSPARENT, VARIABLE_PITCH,
+        BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreatePen, CreateSolidBrush, DEFAULT_CHARSET,
+        DT_CALCRECT, DT_LEFT, DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW, EndPaint, FF_SWISS, GetDeviceCaps,
+        HDC, HFONT, InvalidateRect, LOGPIXELSY, LineTo, MoveToEx, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID, Rectangle,
+        SelectObject, SetBkMode, SetTextColor, TRANSPARENT, VARIABLE_PITCH,
     },
     System::LibraryLoader::GetModuleHandleW,
     UI::Controls::WM_MOUSELEAVE,
@@ -443,7 +443,7 @@ fn create_check_box_font(hdc: HDC) -> HFONT {
             DEFAULT_CHARSET,
             OUT_DEFAULT_PRECIS,
             CLIP_DEFAULT_PRECIS,
-            ANTIALIASED_QUALITY,
+            CLEARTYPE_QUALITY,
             (VARIABLE_PITCH.0 | FF_SWISS.0) as u32,
             w!("Segoe UI"),
         )

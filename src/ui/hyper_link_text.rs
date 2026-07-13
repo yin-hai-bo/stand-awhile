@@ -5,7 +5,7 @@ use crate::ui::theme::{is_dark_theme_active, paint_background};
 use windows::Win32::{
     Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Gdi::{
-        ANTIALIASED_QUALITY, BeginPaint, CLIP_DEFAULT_PRECIS, CreateFontW, DEFAULT_CHARSET, DT_CALCRECT, DT_LEFT,
+        BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, DEFAULT_CHARSET, DT_CALCRECT, DT_LEFT,
         DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW, EndPaint, FF_SWISS, GetDeviceCaps, HDC, HFONT,
         InvalidateRect, LOGPIXELSY, OUT_DEFAULT_PRECIS, PAINTSTRUCT, SelectObject, SetBkMode, SetTextColor,
         TRANSPARENT, VARIABLE_PITCH,
@@ -399,7 +399,7 @@ fn create_link_font(hdc: HDC) -> HFONT {
             DEFAULT_CHARSET,
             OUT_DEFAULT_PRECIS,
             CLIP_DEFAULT_PRECIS,
-            ANTIALIASED_QUALITY,
+            CLEARTYPE_QUALITY,
             (VARIABLE_PITCH.0 | FF_SWISS.0) as u32,
             w!("Segoe UI"),
         )

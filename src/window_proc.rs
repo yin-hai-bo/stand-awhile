@@ -16,7 +16,7 @@ use crate::ui::{
 };
 use crate::{
     config::{open_config_directory, show_config_open_error},
-    i18n::{detect_language, main_window_title, reminder_notification_message, reminder_notification_title},
+    i18n::{Language, detect_language, main_window_title, reminder_notification_message, reminder_notification_title},
     toast,
     tray_icon::{TRAY_MENU_ABOUT_ID, TRAY_MENU_OPEN_CONFIG_ID, TrayIcon, WM_TRAYICON},
 };
@@ -383,8 +383,9 @@ fn handle_tray_menu_command(hwnd: HWND, wparam: WPARAM) -> bool {
 }
 
 fn show_about_dialog(hwnd: HWND) {
-    let title = wide_null(main_window_title(detect_language()));
-    let message = wide_null("Stand Awhile");
+    let language = detect_language();
+    let title = wide_null(main_window_title(language));
+    let message = wide_null(about_message(language));
     unsafe {
         let _ = MessageBoxW(
             Some(hwnd),
@@ -392,6 +393,17 @@ fn show_about_dialog(hwnd: HWND) {
             windows::core::PCWSTR(title.as_ptr()),
             MB_OK,
         );
+    }
+}
+
+fn about_message(language: Language) -> &'static str {
+    match language {
+        Language::Chinese => {
+            "Stand Awhile\n\n一个轻量的 Windows 桌面提醒工具，帮助你定时站起来、伸展身体，减少久坐带来的负担。\n\nGitHub: https://github.com/yin-hai-bo/stand-awhile"
+        }
+        Language::English => {
+            "Stand Awhile\n\nA lightweight Windows desktop reminder that helps you stand up, stretch, and move regularly during long work sessions.\n\nGitHub: https://github.com/yin-hai-bo/stand-awhile"
+        }
     }
 }
 

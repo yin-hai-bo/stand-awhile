@@ -6,8 +6,8 @@ use windows::core::Error;
 use windows::Win32::{
     Foundation::{HWND, RECT},
     Graphics::Gdi::{
-        ANTIALIASED_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, DEFAULT_CHARSET, DT_CALCRECT, DT_CENTER, DT_SINGLELINE,
-        DT_VCENTER, DeleteObject, DrawTextW, FF_ROMAN, FW_NORMAL, GetDeviceCaps, HDC, LOGPIXELSY, OUT_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, DEFAULT_CHARSET, DT_CALCRECT, DT_CENTER, DT_SINGLELINE,
+        DT_VCENTER, DeleteObject, DrawTextW, FF_SWISS, FW_NORMAL, GetDeviceCaps, HDC, LOGPIXELSY, OUT_DEFAULT_PRECIS,
         SelectObject, SetBkMode, SetTextColor, TRANSPARENT, VARIABLE_PITCH,
     },
     UI::WindowsAndMessaging::GetClientRect,
@@ -119,9 +119,9 @@ fn create_countdown_font(hdc: HDC) -> windows::Win32::Graphics::Gdi::HFONT {
             DEFAULT_CHARSET,
             OUT_DEFAULT_PRECIS,
             CLIP_DEFAULT_PRECIS,
-            ANTIALIASED_QUALITY,
-            (VARIABLE_PITCH.0 | FF_ROMAN.0) as u32,
-            windows::core::w!("Times New Roman"),
+            CLEARTYPE_QUALITY,
+            (VARIABLE_PITCH.0 | FF_SWISS.0) as u32,
+            windows::core::w!("Segoe UI"),
         )
     }
 }
