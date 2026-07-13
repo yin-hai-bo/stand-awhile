@@ -1,3 +1,4 @@
+mod about;
 mod config;
 mod i18n;
 mod toast;

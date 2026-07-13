@@ -3,6 +3,7 @@ use std::sync::{
     atomic::{AtomicU32, Ordering},
 };
 
+use crate::about::show_about_window;
 use crate::ui::{
     button::{
         ControlButton, button_from_command, layout_control_buttons, refresh_control_buttons, update_control_buttons,
@@ -16,7 +17,7 @@ use crate::ui::{
 };
 use crate::{
     config::{open_config_directory, show_config_open_error},
-    i18n::{Language, detect_language, main_window_title, reminder_notification_message, reminder_notification_title},
+    i18n::{detect_language, reminder_notification_message, reminder_notification_title},
     toast,
     tray_icon::{TRAY_MENU_ABOUT_ID, TRAY_MENU_OPEN_CONFIG_ID, TrayIcon, WM_TRAYICON},
 };
@@ -26,9 +27,9 @@ use windows::Win32::{
     Graphics::Gdi::{BeginPaint, EndPaint, GetDC, InvalidateRect, PAINTSTRUCT, ReleaseDC},
     UI::WindowsAndMessaging::{
         DefWindowProcW, FLASHW_ALL, FLASHW_TIMERNOFG, FLASHWINFO, FlashWindowEx, GWLP_USERDATA, GetWindowLongPtrW,
-        IsWindowVisible, KillTimer, MB_OK, MessageBoxW, PostQuitMessage, SW_HIDE, SWP_NOACTIVATE, SWP_NOZORDER,
-        SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_DPICHANGED,
-        WM_NCDESTROY, WM_PAINT, WM_SETTINGCHANGE, WM_THEMECHANGED, WM_TIMER,
+        IsWindowVisible, KillTimer, PostQuitMessage, SW_HIDE, SWP_NOACTIVATE, SWP_NOZORDER, SetTimer,
+        SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_DPICHANGED, WM_NCDESTROY,
+        WM_PAINT, WM_SETTINGCHANGE, WM_THEMECHANGED, WM_TIMER,
     },
 };
 
@@ -375,38 +376,9 @@ fn handle_tray_menu_command(hwnd: HWND, wparam: WPARAM) -> bool {
             true
         }
         TRAY_MENU_ABOUT_ID => {
-            show_about_dialog(hwnd);
+            let _ = show_about_window(hwnd);
             true
         }
         _ => false,
     }
-}
-
-fn show_about_dialog(hwnd: HWND) {
-    let language = detect_language();
-    let title = wide_null(main_window_title(language));
-    let message = wide_null(about_message(language));
-    unsafe {
-        let _ = MessageBoxW(
-            Some(hwnd),
-            windows::core::PCWSTR(message.as_ptr()),
-            windows::core::PCWSTR(title.as_ptr()),
-            MB_OK,
-        );
-    }
-}
-
-fn about_message(language: Language) -> &'static str {
-    match language {
-        Language::Chinese => {
-            "Stand Awhile\n\n一个轻量的 Windows 桌面提醒工具，帮助你定时站起来、伸展身体，减少久坐带来的负担。\n\nGitHub: https://github.com/yin-hai-bo/stand-awhile"
-        }
-        Language::English => {
-            "Stand Awhile\n\nA lightweight Windows desktop reminder that helps you stand up, stretch, and move regularly during long work sessions.\n\nGitHub: https://github.com/yin-hai-bo/stand-awhile"
-        }
-    }
-}
-
-fn wide_null(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain([0]).collect()
 }
