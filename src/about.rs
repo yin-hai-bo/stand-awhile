@@ -40,6 +40,7 @@ const GITHUB_LABEL_TOP: i32 = 164;
 const GITHUB_LABEL_GAP: i32 = 6;
 const GITHUB_URL: &str = "https://github.com/yin-hai-bo/stand-awhile";
 const APP_ICON_RESOURCE_ID: usize = 1;
+const BUILD_COMMIT: &str = env!("BUILD_COMMIT");
 
 static ABOUT_CLASS_REGISTRATION: OnceLock<std::result::Result<(), i32>> = OnceLock::new();
 
@@ -250,7 +251,8 @@ fn draw_about_window(hwnd: HWND, hdc: HDC) -> Result<()> {
         let _ = DrawTextW(hdc, title.as_mut_slice(), &mut title_rect, DT_LEFT | DT_SINGLELINE);
 
         let _ = SelectObject(hdc, body_font.into());
-        let mut body = wide_text(about_body_text(state.language));
+        let body_text = about_body_text(state.language);
+        let mut body = wide_text(&body_text);
         let _ = DrawTextW(hdc, body.as_mut_slice(), &mut body_rect, DT_LEFT | DT_WORDBREAK);
 
         let mut github_label = wide_text("GitHub:");
@@ -374,13 +376,15 @@ fn about_window_title(language: Language) -> &'static str {
     }
 }
 
-fn about_body_text(language: Language) -> &'static str {
-    match language {
+fn about_body_text(language: Language) -> String {
+    let description = match language {
         Language::Chinese => "一个轻量的 Windows 桌面提醒工具，帮助你定时站起来、伸展身体，减少久坐带来的负担。",
         Language::English => {
             "A lightweight Windows desktop reminder that helps you stand up, stretch, and move regularly during long work sessions."
         }
-    }
+    };
+
+    format!("{description}\n\nCommit: {BUILD_COMMIT}")
 }
 
 fn about_state(hwnd: HWND) -> Option<&'static AboutState> {
