@@ -5,7 +5,10 @@ mod animation;
 #[allow(dead_code)]
 pub(crate) mod asset;
 mod config;
+mod gdi;
 mod i18n;
+#[allow(dead_code)]
+mod render;
 mod toast;
 mod tray_icon;
 mod ui;

@@ -90,7 +90,7 @@ Tests:
 
 Review boundary: asset ownership, decoding, and cache API. No HWND creation.
 
-## STEP 3 — Implement the CPU layered renderer
+## STEP 3 — Implement the CPU layered renderer ✅ 已完成
 
 Goal: submit one prepared BGRA frame to a transparent top-level window.
 
