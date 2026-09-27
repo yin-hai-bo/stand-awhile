@@ -7,3 +7,4 @@ pub mod hyper_link_text;
 pub mod theme;
 
 pub use countdown::{countdown_rect, draw_countdown, invalidate_countdown_font, release_countdown_font};
+pub(crate) use gdi_plus::GdiPlus;

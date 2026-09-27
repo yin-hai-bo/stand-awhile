@@ -65,7 +65,7 @@ Tests:
 
 Review boundary: only pure animation types and tests. No window or asset code.
 
-## STEP 2 — Load and prepare the cat assets
+## STEP 2 — Load and prepare the cat assets ✅ 已完成
 
 Goal: turn the checked-in cat asset manifest and PNG files into renderable
 frames without reading files during animation ticks.

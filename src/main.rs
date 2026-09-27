@@ -2,6 +2,8 @@
 
 mod about;
 mod animation;
+#[allow(dead_code)]
+pub(crate) mod asset;
 mod config;
 mod i18n;
 mod toast;
