@@ -1,0 +1,35 @@
+{
+  "name": "cat-dog",
+  "source": "https://opengameart.org/content/cat-dog-free-sprites",
+  "author": "pzUH",
+  "license": "CC0",
+  "default_frame_duration_ms": 100,
+  "characters": {
+    "cat": {
+      "path": "png/cat",
+      "animations": {
+        "idle": { "pattern": "Idle ({index}).png", "frame_count": 10, "loop": true },
+        "walk": { "pattern": "Walk ({index}).png", "frame_count": 10, "loop": true },
+        "run": { "pattern": "Run ({index}).png", "frame_count": 8, "loop": true },
+        "jump": { "pattern": "Jump ({index}).png", "frame_count": 8, "loop": false },
+        "fall": { "pattern": "Fall ({index}).png", "frame_count": 8, "loop": false },
+        "hurt": { "pattern": "Hurt ({index}).png", "frame_count": 10, "loop": false },
+        "dead": { "pattern": "Dead ({index}).png", "frame_count": 10, "loop": false },
+        "slide": { "pattern": "Slide ({index}).png", "frame_count": 10, "loop": false }
+      }
+    },
+    "dog": {
+      "path": "png/dog",
+      "animations": {
+        "idle": { "pattern": "Idle ({index}).png", "frame_count": 10, "loop": true },
+        "walk": { "pattern": "Walk ({index}).png", "frame_count": 10, "loop": true },
+        "run": { "pattern": "Run ({index}).png", "frame_count": 8, "loop": true },
+        "jump": { "pattern": "Jump ({index}).png", "frame_count": 8, "loop": false },
+        "fall": { "pattern": "Fall ({index}).png", "frame_count": 8, "loop": false },
+        "hurt": { "pattern": "Hurt ({index}).png", "frame_count": 10, "loop": false },
+        "dead": { "pattern": "Dead ({index}).png", "frame_count": 10, "loop": false },
+        "slide": { "pattern": "Slide ({index}).png", "frame_count": 10, "loop": false }
+      }
+    }
+  }
+}
