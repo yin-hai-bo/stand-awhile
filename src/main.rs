@@ -1,6 +1,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod about;
+mod animation;
 mod config;
 mod i18n;
 mod toast;

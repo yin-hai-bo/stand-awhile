@@ -41,7 +41,7 @@ STEP 8  DPI, monitor bounds, and lifecycle hardening
 STEP 9  verification, diagnostics, and documentation
 ```
 
-## STEP 1 — Extract the animation domain
+## STEP 1 — Extract the animation domain ✅ 已完成
 
 Goal: create a platform-independent animation model and clock-driven player.
 
