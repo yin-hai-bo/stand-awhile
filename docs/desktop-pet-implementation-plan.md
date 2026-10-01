@@ -160,7 +160,7 @@ Tests and checks:
 
 Review boundary: animation/controller integration only; no timer policy change.
 
-## STEP 6 — Add Pet interaction
+## STEP 6 — Add Pet interaction ✅ 已完成
 
 Goal: make the Pet draggable and acknowledgeable.
 

@@ -4,6 +4,7 @@ use std::sync::{
 };
 
 use crate::about::show_about_window;
+use crate::pet_window::{PET_COMMAND_EXIT, PET_COMMAND_SHOW_MAIN, WM_PET_COMMAND};
 use crate::ui::{
     button::{
         ControlButton, button_from_command, layout_control_buttons, refresh_control_buttons, update_control_buttons,
@@ -26,10 +27,10 @@ use windows::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Gdi::{BeginPaint, EndPaint, GetDC, InvalidateRect, PAINTSTRUCT, ReleaseDC},
     UI::WindowsAndMessaging::{
-        DefWindowProcW, FLASHW_ALL, FLASHW_TIMERNOFG, FLASHWINFO, FlashWindowEx, GWLP_USERDATA, GetWindowLongPtrW,
-        IsWindowVisible, KillTimer, PostQuitMessage, SW_HIDE, SWP_NOACTIVATE, SWP_NOZORDER, SetTimer,
-        SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_DPICHANGED, WM_NCDESTROY,
-        WM_PAINT, WM_SETTINGCHANGE, WM_THEMECHANGED, WM_TIMER,
+        DefWindowProcW, DestroyWindow, FLASHW_ALL, FLASHW_TIMERNOFG, FLASHWINFO, FlashWindowEx, GWLP_USERDATA,
+        GetWindowLongPtrW, IsWindowVisible, KillTimer, PostQuitMessage, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
+        SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_CLOSE, WM_COMMAND, WM_DESTROY,
+        WM_DPICHANGED, WM_NCDESTROY, WM_PAINT, WM_SETTINGCHANGE, WM_THEMECHANGED, WM_TIMER,
     },
 };
 
@@ -109,6 +110,19 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
                 return LRESULT(0);
             }
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
+        WM_PET_COMMAND => {
+            match wparam.0 {
+                PET_COMMAND_SHOW_MAIN => unsafe {
+                    let _ = ShowWindow(hwnd, SW_SHOW);
+                    let _ = SetForegroundWindow(hwnd);
+                },
+                PET_COMMAND_EXIT => unsafe {
+                    let _ = DestroyWindow(hwnd);
+                },
+                _ => {}
+            }
+            LRESULT(0)
         }
         WM_COMMAND => {
             if handle_tray_menu_command(hwnd, wparam) {

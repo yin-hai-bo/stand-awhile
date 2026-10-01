@@ -127,7 +127,7 @@ fn run() -> Result<()> {
             .as_path(),
     )
     .map_err(|_| Error::from_win32())?;
-    let _pet_window = PetWindow::create(instance, assets)?;
+    let _pet_window = PetWindow::create(instance, hwnd, assets)?;
     create_control_buttons(hwnd, instance)?;
     let config_link = HyperLinkText::create(
         hwnd,

@@ -2,13 +2,17 @@ use std::{sync::OnceLock, time::Instant};
 
 use windows::{
     Win32::{
-        Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
+        Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+        UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture},
         UI::WindowsAndMessaging::{
-            CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA,
-            GetWindowLongPtrW, HWND_TOPMOST, IDC_ARROW, KillTimer, LoadCursorW, RegisterClassExW, SPI_GETWORKAREA,
-            SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetTimer, SetWindowLongPtrW, SetWindowPos,
-            ShowWindow, SystemParametersInfoW, WM_NCCREATE, WM_NCDESTROY, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED,
-            WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
+            AppendMenuW, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
+            DestroyMenu, DestroyWindow, GWLP_USERDATA, GetCursorPos, GetWindowLongPtrW, GetWindowRect, HWND_TOPMOST,
+            IDC_ARROW, KillTimer, LoadCursorW, MF_STRING, RegisterClassExW, SPI_GETWORKAREA, SW_HIDE,
+            SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_SHOWWINDOW, SetTimer,
+            SetWindowLongPtrW, SetWindowPos, ShowWindow, SystemParametersInfoW, TPM_LEFTALIGN, TPM_RETURNCMD,
+            TPM_RIGHTBUTTON, TrackPopupMenuEx, WM_APP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE,
+            WM_NCDESTROY, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+            WS_POPUP,
         },
     },
     core::{Error, PCWSTR, Result, w},
@@ -24,6 +28,15 @@ const PET_WINDOW_CLASS: PCWSTR = w!("YHB-StandAwhilePetWindow");
 const PET_MARGIN: i32 = 24;
 const PET_TIMER_ID: usize = 1;
 const PET_TIMER_INTERVAL_MS: u32 = 16;
+const CLICK_DRAG_THRESHOLD: i32 = 4;
+
+pub const WM_PET_COMMAND: u32 = WM_APP + 2;
+pub const PET_COMMAND_ACKNOWLEDGE: usize = 1;
+pub const PET_COMMAND_SHOW_MAIN: usize = 2;
+pub const PET_COMMAND_EXIT: usize = 3;
+const PET_MENU_HIDE: usize = 1;
+const PET_MENU_SHOW_MAIN: usize = 2;
+const PET_MENU_EXIT: usize = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ActiveClip {
@@ -40,6 +53,14 @@ struct PetWindowState {
     player: AnimationPlayer,
     active_clip: ActiveClip,
     last_frame: Option<(ActiveClip, u32)>,
+    owner: HWND,
+    drag: Option<DragState>,
+}
+
+struct DragState {
+    pointer_start: POINT,
+    window_start: POINT,
+    moved: bool,
 }
 
 pub struct PetWindow {
@@ -47,7 +68,7 @@ pub struct PetWindow {
 }
 
 impl PetWindow {
-    pub fn create(instance: HINSTANCE, animations: CatAnimations) -> Result<Self> {
+    pub fn create(instance: HINSTANCE, owner: HWND, animations: CatAnimations) -> Result<Self> {
         register_class(instance)?;
 
         let frame = &animations.idle.frames[0];
@@ -96,6 +117,8 @@ impl PetWindow {
                 player,
                 active_clip: ActiveClip::Idle,
                 last_frame: None,
+                owner,
+                drag: None,
             },
         );
 
@@ -224,6 +247,30 @@ unsafe extern "system" fn pet_window_proc(hwnd: HWND, msg: u32, _wparam: WPARAM,
             }
             LRESULT(0)
         }
+        WM_LBUTTONDOWN => {
+            if let Some(state) = state_mut(hwnd) {
+                let _ = begin_drag(hwnd, state);
+            }
+            LRESULT(0)
+        }
+        WM_MOUSEMOVE => {
+            if let Some(state) = state_mut(hwnd) {
+                let _ = move_drag(hwnd, state);
+            }
+            LRESULT(0)
+        }
+        WM_LBUTTONUP => {
+            if let Some(state) = state_mut(hwnd) {
+                let _ = end_drag(hwnd, state);
+            }
+            LRESULT(0)
+        }
+        WM_RBUTTONUP => {
+            if let Some(state) = state_mut(hwnd) {
+                let _ = show_context_menu(hwnd, state);
+            }
+            LRESULT(0)
+        }
         WM_NCDESTROY => {
             unsafe {
                 let _ = KillTimer(Some(hwnd), PET_TIMER_ID);
@@ -245,6 +292,129 @@ fn start_jump(state: &mut PetWindowState) {
     state.active_clip = ActiveClip::Jump;
     state.player = AnimationPlayer::new(state.jump.clip.clone());
     state.player.play(Instant::now());
+}
+
+fn begin_drag(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
+    let mut pointer = POINT::default();
+    unsafe { GetCursorPos(&mut pointer)? };
+    let mut window = RECT::default();
+    unsafe { GetWindowRect(hwnd, &mut window)? };
+    state.drag = Some(DragState {
+        pointer_start: pointer,
+        window_start: POINT {
+            x: window.left,
+            y: window.top,
+        },
+        moved: false,
+    });
+    unsafe {
+        let _ = SetCapture(hwnd);
+    }
+    Ok(())
+}
+
+fn move_drag(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
+    let Some(drag) = state.drag.as_mut() else {
+        return Ok(());
+    };
+    let mut pointer = POINT::default();
+    unsafe { GetCursorPos(&mut pointer)? };
+    drag.moved = drag.moved || movement_exceeded(drag.pointer_start, pointer);
+    let position = (
+        drag.window_start.x + pointer.x - drag.pointer_start.x,
+        drag.window_start.y + pointer.y - drag.pointer_start.y,
+    );
+    state.position = position;
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            position.0,
+            position.1,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        )?;
+    }
+    state.renderer.submit(
+        &state.surface,
+        SurfacePoint {
+            x: position.0,
+            y: position.1,
+        },
+    )?;
+    Ok(())
+}
+
+fn end_drag(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
+    let Some(drag) = state.drag.take() else {
+        return Ok(());
+    };
+    unsafe {
+        let _ = ReleaseCapture();
+    }
+    if !drag.moved {
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+            let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                Some(state.owner),
+                WM_PET_COMMAND,
+                WPARAM(PET_COMMAND_ACKNOWLEDGE),
+                LPARAM(0),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn show_context_menu(hwnd: HWND, state: &PetWindowState) -> Result<()> {
+    let menu = unsafe { CreatePopupMenu()? };
+    unsafe {
+        AppendMenuW(menu, MF_STRING, PET_MENU_HIDE, w!("Hide Pet"))?;
+        AppendMenuW(menu, MF_STRING, PET_MENU_SHOW_MAIN, w!("Show Main Window"))?;
+        AppendMenuW(menu, MF_STRING, PET_MENU_EXIT, w!("Exit"))?;
+    }
+
+    let mut point = POINT::default();
+    let command = unsafe {
+        GetCursorPos(&mut point)?;
+        let command = TrackPopupMenuEx(
+            menu,
+            (TPM_LEFTALIGN | TPM_RIGHTBUTTON | TPM_RETURNCMD).0,
+            point.x,
+            point.y,
+            hwnd,
+            None,
+        )
+        .0 as usize;
+        let _ = DestroyMenu(menu);
+        command
+    };
+
+    match command {
+        PET_MENU_HIDE => unsafe {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+        },
+        PET_MENU_SHOW_MAIN => post_pet_command(state.owner, PET_COMMAND_SHOW_MAIN),
+        PET_MENU_EXIT => post_pet_command(state.owner, PET_COMMAND_EXIT),
+        _ => {}
+    }
+    Ok(())
+}
+
+fn post_pet_command(owner: HWND, command: usize) {
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+            Some(owner),
+            WM_PET_COMMAND,
+            WPARAM(command),
+            LPARAM(0),
+        );
+    }
+}
+
+fn movement_exceeded(start: POINT, current: POINT) -> bool {
+    (current.x - start.x).abs() > CLICK_DRAG_THRESHOLD || (current.y - start.y).abs() > CLICK_DRAG_THRESHOLD
 }
 
 fn update_frame(state: &mut PetWindowState) -> Result<()> {
@@ -289,12 +459,21 @@ fn should_return_to_idle(active_clip: ActiveClip, playback_state: PlaybackState)
 
 #[cfg(test)]
 mod tests {
-    use super::{ActiveClip, PlaybackState, should_return_to_idle};
+    use windows::Win32::Foundation::POINT;
+
+    use super::{ActiveClip, PlaybackState, movement_exceeded, should_return_to_idle};
 
     #[test]
     fn finished_jump_returns_to_idle() {
         assert!(should_return_to_idle(ActiveClip::Jump, PlaybackState::Finished));
         assert!(!should_return_to_idle(ActiveClip::Jump, PlaybackState::Playing));
         assert!(!should_return_to_idle(ActiveClip::Idle, PlaybackState::Finished));
+    }
+
+    #[test]
+    fn small_pointer_movement_is_not_dragging() {
+        let start = POINT { x: 100, y: 100 };
+        assert!(!movement_exceeded(start, POINT { x: 104, y: 104 }));
+        assert!(movement_exceeded(start, POINT { x: 105, y: 100 }));
     }
 }
