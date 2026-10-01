@@ -4,7 +4,9 @@ use std::sync::{
 };
 
 use crate::about::show_about_window;
-use crate::pet_window::{PET_COMMAND_EXIT, PET_COMMAND_SHOW_MAIN, WM_PET_COMMAND};
+use crate::pet_window::{
+    PET_COMMAND_ACKNOWLEDGE, PET_COMMAND_EXIT, PET_COMMAND_SHOW_MAIN, PET_COMMAND_START, PetWindow, WM_PET_COMMAND,
+};
 use crate::ui::{
     button::{
         ControlButton, button_from_command, layout_control_buttons, refresh_control_buttons, update_control_buttons,
@@ -18,19 +20,18 @@ use crate::ui::{
 };
 use crate::{
     config::{open_config_directory, show_config_open_error},
-    i18n::{Language, reminder_notification_message, reminder_notification_title},
-    toast,
-    tray_icon::{TRAY_MENU_ABOUT_ID, TRAY_MENU_OPEN_CONFIG_ID, TrayIcon, WM_TRAYICON},
+    i18n::Language,
+    tray_icon::{TRAY_MENU_ABOUT_ID, TRAY_MENU_OPEN_CONFIG_ID, TRAY_MENU_START_ID, TrayIcon, WM_TRAYICON},
 };
 
 use windows::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Gdi::{BeginPaint, EndPaint, GetDC, InvalidateRect, PAINTSTRUCT, ReleaseDC},
     UI::WindowsAndMessaging::{
-        DefWindowProcW, DestroyWindow, FLASHW_ALL, FLASHW_TIMERNOFG, FLASHWINFO, FlashWindowEx, GWLP_USERDATA,
-        GetWindowLongPtrW, IsWindowVisible, KillTimer, PostQuitMessage, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
-        SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_CLOSE, WM_COMMAND, WM_DESTROY,
-        WM_DPICHANGED, WM_NCDESTROY, WM_PAINT, WM_SETTINGCHANGE, WM_THEMECHANGED, WM_TIMER,
+        DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetWindowLongPtrW, KillTimer, PostQuitMessage, SW_HIDE, SW_SHOW,
+        SWP_NOACTIVATE, SWP_NOZORDER, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+        WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_DPICHANGED, WM_NCDESTROY, WM_PAINT, WM_SETTINGCHANGE, WM_THEMECHANGED,
+        WM_TIMER,
     },
 };
 
@@ -50,6 +51,7 @@ pub struct WindowState {
     pub theme: Theme,
     pub tray_icon: TrayIcon,
     pub tray_check_box: CheckBox,
+    pub pet_window: PetWindow,
     pub components: Vec<Box<dyn Component>>,
 }
 
@@ -113,6 +115,8 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
         }
         WM_PET_COMMAND => {
             match wparam.0 {
+                PET_COMMAND_ACKNOWLEDGE => acknowledge_pet(hwnd),
+                PET_COMMAND_START => activate_button(hwnd, ControlButton::Play),
                 PET_COMMAND_SHOW_MAIN => unsafe {
                     let _ = ShowWindow(hwnd, SW_SHOW);
                     let _ = SetForegroundWindow(hwnd);
@@ -148,6 +152,7 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
             LRESULT(0)
         }
         WM_CLOSE => {
+            hide_pet(hwnd);
             if window_state(hwnd)
                 .map(|state| state.tray_check_box.is_checked())
                 .unwrap_or(false)
@@ -193,6 +198,7 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         WM_DESTROY => {
+            hide_pet(hwnd);
             if let Some(state) = window_state(hwnd) {
                 state.tray_icon.delete(hwnd);
             }
@@ -228,6 +234,7 @@ fn activate_button(hwnd: HWND, button: ControlButton) {
 
     match button {
         ControlButton::Play => {
+            let _ = hide_pet_animated(hwnd);
             let initial_remaining = initial_remaining_seconds();
             if previous_remaining == 0 {
                 REMAINING_SECONDS.store(initial_remaining, Ordering::Relaxed);
@@ -240,10 +247,12 @@ fn activate_button(hwnd: HWND, button: ControlButton) {
             start_timer(hwnd);
         }
         ControlButton::Pause => {
+            hide_pet(hwnd);
             *TIMER_STATE.lock().expect("timer state mutex poisoned") = TimerState::Paused;
             stop_timer(hwnd);
         }
         ControlButton::Reset => {
+            hide_pet(hwnd);
             let initial_remaining = initial_remaining_seconds();
             let previous_remaining = REMAINING_SECONDS.swap(initial_remaining, Ordering::Relaxed);
             *TIMER_STATE.lock().expect("timer state mutex poisoned") = TimerState::NotStarted;
@@ -298,42 +307,35 @@ fn stop_timer(hwnd: HWND) {
 }
 
 fn notify_timer_finished(hwnd: HWND) {
-    if unsafe { IsWindowVisible(hwnd).as_bool() } {
-        flash_window(hwnd);
-        return;
-    }
-
-    let Some(state) = window_state(hwnd) else {
-        return;
-    };
-
-    let language = state.language;
-    if toast::show(
-        reminder_notification_title(language),
-        reminder_notification_message(language),
-    )
-    .is_err()
-    {
-        let _ = state.tray_icon.show_notification(
-            hwnd,
-            reminder_notification_title(language),
-            reminder_notification_message(language),
-        );
+    if let Some(state) = window_state(hwnd) {
+        state.pet_window.show();
+        let _ = state.pet_window.play_jump();
     }
 }
 
-fn flash_window(hwnd: HWND) {
-    let mut flash_info = FLASHWINFO {
-        cbSize: std::mem::size_of::<FLASHWINFO>() as u32,
-        hwnd,
-        dwFlags: FLASHW_ALL | FLASHW_TIMERNOFG,
-        uCount: 3,
-        dwTimeout: 0,
-    };
-
+fn acknowledge_pet(hwnd: HWND) {
+    let initial_remaining = initial_remaining_seconds();
+    let previous_remaining = REMAINING_SECONDS.swap(initial_remaining, Ordering::Relaxed);
+    *TIMER_STATE.lock().expect("timer state mutex poisoned") = TimerState::Running;
+    start_timer(hwnd);
     unsafe {
-        let _ = FlashWindowEx(&mut flash_info);
+        invalidate_countdown(hwnd, previous_remaining);
+        invalidate_countdown(hwnd, initial_remaining);
     }
+    let _ = sync_control_button_enabled(hwnd);
+}
+
+fn hide_pet(hwnd: HWND) {
+    if let Some(state) = window_state(hwnd) {
+        state.pet_window.hide();
+    }
+}
+
+fn hide_pet_animated(hwnd: HWND) -> windows::core::Result<()> {
+    let Some(state) = window_state(hwnd) else {
+        return Ok(());
+    };
+    state.pet_window.hide_animated()
 }
 
 fn initial_remaining_seconds() -> u32 {
@@ -387,6 +389,10 @@ fn release_window_state(hwnd: HWND) {
 
 fn handle_tray_menu_command(hwnd: HWND, wparam: WPARAM) -> bool {
     match (wparam.0 & 0xFFFF) as usize {
+        TRAY_MENU_START_ID => {
+            activate_button(hwnd, ControlButton::Play);
+            true
+        }
         TRAY_MENU_OPEN_CONFIG_ID => {
             if let Err(error) = open_config_directory(hwnd) {
                 let language = window_state(hwnd)

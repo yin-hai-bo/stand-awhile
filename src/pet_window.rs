@@ -34,9 +34,11 @@ pub const WM_PET_COMMAND: u32 = WM_APP + 2;
 pub const PET_COMMAND_ACKNOWLEDGE: usize = 1;
 pub const PET_COMMAND_SHOW_MAIN: usize = 2;
 pub const PET_COMMAND_EXIT: usize = 3;
-const PET_MENU_HIDE: usize = 1;
+pub const PET_COMMAND_START: usize = 4;
+const PET_MENU_START: usize = 1;
 const PET_MENU_SHOW_MAIN: usize = 2;
 const PET_MENU_EXIT: usize = 3;
+const HIDE_ANIMATION_DURATION_MS: u128 = 180;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ActiveClip {
@@ -55,12 +57,20 @@ struct PetWindowState {
     last_frame: Option<(ActiveClip, u32)>,
     owner: HWND,
     drag: Option<DragState>,
+    hide_animation: Option<HideAnimation>,
 }
 
 struct DragState {
     pointer_start: POINT,
     window_start: POINT,
     moved: bool,
+}
+
+struct HideAnimation {
+    started_at: Instant,
+    from: (i32, i32),
+    restore_position: (i32, i32),
+    target_y: i32,
 }
 
 pub struct PetWindow {
@@ -119,6 +129,7 @@ impl PetWindow {
                 last_frame: None,
                 owner,
                 drag: None,
+                hide_animation: None,
             },
         );
 
@@ -154,16 +165,55 @@ impl PetWindow {
 
     #[allow(dead_code)]
     pub fn hide(&self) {
+        if let Some(state) = state_mut(self.hwnd) {
+            cancel_hide_animation(state);
+        }
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_HIDE);
         }
     }
 
+    pub fn hide_animated(&self) -> Result<()> {
+        let state = state_mut(self.hwnd).ok_or_else(Error::from_win32)?;
+        if !unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(self.hwnd).as_bool() } {
+            return Ok(());
+        }
+        begin_hide_animation(state)
+    }
+
     #[allow(dead_code)]
     pub fn show(&self) {
+        if let Some(state) = state_mut(self.hwnd) {
+            cancel_hide_animation(state);
+            let position = state.position;
+            let _ = set_position(self.hwnd, state, position);
+        }
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
         }
+    }
+}
+
+fn begin_hide_animation(state: &mut PetWindowState) -> Result<()> {
+    let work_area = primary_work_area()?;
+    let height = state.surface.height() as i32;
+    state.hide_animation = Some(HideAnimation {
+        started_at: Instant::now(),
+        from: state.position,
+        restore_position: state.position,
+        target_y: hide_target_y(state.position.1, height, work_area),
+    });
+    Ok(())
+}
+
+fn hide_target_y(position_y: i32, height: i32, work_area: RECT) -> i32 {
+    let center_y = position_y + height / 2;
+    let distance_to_top = center_y - work_area.top;
+    let distance_to_bottom = work_area.bottom - center_y;
+    if distance_to_top < distance_to_bottom {
+        work_area.top - height
+    } else {
+        work_area.bottom
     }
 }
 
@@ -205,6 +255,15 @@ fn register_class(instance: HINSTANCE) -> Result<()> {
 }
 
 fn pet_position(width: i32, height: i32) -> Result<(i32, i32)> {
+    let work_area = primary_work_area()?;
+
+    Ok((
+        work_area.right - width - PET_MARGIN,
+        work_area.bottom - height - PET_MARGIN,
+    ))
+}
+
+fn primary_work_area() -> Result<RECT> {
     let mut work_area = RECT::default();
     unsafe {
         SystemParametersInfoW(
@@ -214,11 +273,7 @@ fn pet_position(width: i32, height: i32) -> Result<(i32, i32)> {
             Default::default(),
         )?
     };
-
-    Ok((
-        work_area.right - width - PET_MARGIN,
-        work_area.bottom - height - PET_MARGIN,
-    ))
+    Ok(work_area)
 }
 
 fn attach_state(hwnd: HWND, state: PetWindowState) {
@@ -243,6 +298,7 @@ unsafe extern "system" fn pet_window_proc(hwnd: HWND, msg: u32, _wparam: WPARAM,
         }
         WM_TIMER if _wparam.0 == PET_TIMER_ID => {
             if let Some(state) = state_mut(hwnd) {
+                let _ = update_hide_animation(hwnd, state);
                 let _ = update_frame(state);
             }
             LRESULT(0)
@@ -261,7 +317,7 @@ unsafe extern "system" fn pet_window_proc(hwnd: HWND, msg: u32, _wparam: WPARAM,
         }
         WM_LBUTTONUP => {
             if let Some(state) = state_mut(hwnd) {
-                let _ = end_drag(hwnd, state);
+                let _ = end_drag(state);
             }
             LRESULT(0)
         }
@@ -324,29 +380,10 @@ fn move_drag(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
         drag.window_start.x + pointer.x - drag.pointer_start.x,
         drag.window_start.y + pointer.y - drag.pointer_start.y,
     );
-    state.position = position;
-    unsafe {
-        SetWindowPos(
-            hwnd,
-            Some(HWND_TOPMOST),
-            position.0,
-            position.1,
-            0,
-            0,
-            SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
-        )?;
-    }
-    state.renderer.submit(
-        &state.surface,
-        SurfacePoint {
-            x: position.0,
-            y: position.1,
-        },
-    )?;
-    Ok(())
+    set_position(hwnd, state, position)
 }
 
-fn end_drag(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
+fn end_drag(state: &mut PetWindowState) -> Result<()> {
     let Some(drag) = state.drag.take() else {
         return Ok(());
     };
@@ -354,15 +391,8 @@ fn end_drag(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
         let _ = ReleaseCapture();
     }
     if !drag.moved {
-        unsafe {
-            let _ = ShowWindow(hwnd, SW_HIDE);
-            let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
-                Some(state.owner),
-                WM_PET_COMMAND,
-                WPARAM(PET_COMMAND_ACKNOWLEDGE),
-                LPARAM(0),
-            );
-        }
+        let _ = begin_hide_animation(state);
+        post_pet_command(state.owner, PET_COMMAND_ACKNOWLEDGE);
     }
     Ok(())
 }
@@ -370,7 +400,7 @@ fn end_drag(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
 fn show_context_menu(hwnd: HWND, state: &PetWindowState) -> Result<()> {
     let menu = unsafe { CreatePopupMenu()? };
     unsafe {
-        AppendMenuW(menu, MF_STRING, PET_MENU_HIDE, w!("Hide Pet"))?;
+        AppendMenuW(menu, MF_STRING, PET_MENU_START, w!("Start Timer"))?;
         AppendMenuW(menu, MF_STRING, PET_MENU_SHOW_MAIN, w!("Show Main Window"))?;
         AppendMenuW(menu, MF_STRING, PET_MENU_EXIT, w!("Exit"))?;
     }
@@ -392,9 +422,7 @@ fn show_context_menu(hwnd: HWND, state: &PetWindowState) -> Result<()> {
     };
 
     match command {
-        PET_MENU_HIDE => unsafe {
-            let _ = ShowWindow(hwnd, SW_HIDE);
-        },
+        PET_MENU_START => post_pet_command(state.owner, PET_COMMAND_START),
         PET_MENU_SHOW_MAIN => post_pet_command(state.owner, PET_COMMAND_SHOW_MAIN),
         PET_MENU_EXIT => post_pet_command(state.owner, PET_COMMAND_EXIT),
         _ => {}
@@ -415,6 +443,56 @@ fn post_pet_command(owner: HWND, command: usize) {
 
 fn movement_exceeded(start: POINT, current: POINT) -> bool {
     (current.x - start.x).abs() > CLICK_DRAG_THRESHOLD || (current.y - start.y).abs() > CLICK_DRAG_THRESHOLD
+}
+
+fn update_hide_animation(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
+    let Some(animation) = state.hide_animation.as_ref() else {
+        return Ok(());
+    };
+    let elapsed = animation.started_at.elapsed().as_millis();
+    let progress = elapsed.min(HIDE_ANIMATION_DURATION_MS);
+    let from = animation.from;
+    let target_y = animation.target_y;
+    let restore_position = animation.restore_position;
+    let y = from.1 + (target_y - from.1) * progress as i32 / HIDE_ANIMATION_DURATION_MS as i32;
+    set_position(hwnd, state, (from.0, y))?;
+    if elapsed >= HIDE_ANIMATION_DURATION_MS {
+        state.hide_animation = None;
+        state.position = restore_position;
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+        }
+    }
+    Ok(())
+}
+
+fn cancel_hide_animation(state: &mut PetWindowState) {
+    if let Some(animation) = state.hide_animation.take() {
+        state.position = animation.restore_position;
+    }
+}
+
+fn set_position(hwnd: HWND, state: &mut PetWindowState, position: (i32, i32)) -> Result<()> {
+    state.position = position;
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            position.0,
+            position.1,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        )?;
+    }
+    state.renderer.submit(
+        &state.surface,
+        SurfacePoint {
+            x: position.0,
+            y: position.1,
+        },
+    )?;
+    Ok(())
 }
 
 fn update_frame(state: &mut PetWindowState) -> Result<()> {
@@ -460,8 +538,9 @@ fn should_return_to_idle(active_clip: ActiveClip, playback_state: PlaybackState)
 #[cfg(test)]
 mod tests {
     use windows::Win32::Foundation::POINT;
+    use windows::Win32::Foundation::RECT;
 
-    use super::{ActiveClip, PlaybackState, movement_exceeded, should_return_to_idle};
+    use super::{ActiveClip, PlaybackState, hide_target_y, movement_exceeded, should_return_to_idle};
 
     #[test]
     fn finished_jump_returns_to_idle() {
@@ -475,5 +554,17 @@ mod tests {
         let start = POINT { x: 100, y: 100 };
         assert!(!movement_exceeded(start, POINT { x: 104, y: 104 }));
         assert!(movement_exceeded(start, POINT { x: 105, y: 100 }));
+    }
+
+    #[test]
+    fn hide_animation_exits_through_the_nearer_vertical_edge() {
+        let work_area = RECT {
+            left: 0,
+            top: 100,
+            right: 1920,
+            bottom: 1100,
+        };
+        assert_eq!(hide_target_y(120, 100, work_area), 0);
+        assert_eq!(hide_target_y(1000, 100, work_area), 1100);
     }
 }

@@ -2,8 +2,8 @@ use windows::Win32::{
     Foundation::{HWND, LPARAM, POINT, WPARAM},
     UI::{
         Shell::{
-            NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE, NIM_MODIFY,
-            NIM_SETVERSION, NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW,
+            NIF_ICON, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_SETVERSION, NOTIFYICON_VERSION_4,
+            NOTIFYICONDATAW, Shell_NotifyIconW,
         },
         WindowsAndMessaging::{
             AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, HICON, MF_SEPARATOR, MF_STRING, SW_RESTORE,
@@ -20,9 +20,11 @@ pub const TRAY_MENU_SHOW_ID: usize = 41001;
 pub const TRAY_MENU_OPEN_CONFIG_ID: usize = 41002;
 pub const TRAY_MENU_ABOUT_ID: usize = 41003;
 pub const TRAY_MENU_EXIT_ID: usize = 41004;
+pub const TRAY_MENU_START_ID: usize = 41005;
 
 pub struct TrayIcon {
     tooltip: String,
+    start_menu_text: String,
     show_menu_text: String,
     open_config_text: String,
     about_text: String,
@@ -34,6 +36,7 @@ impl TrayIcon {
         hwnd: HWND,
         icon: HICON,
         tooltip: &str,
+        start_menu_text: &str,
         show_menu_text: &str,
         open_config_text: &str,
         about_text: &str,
@@ -49,6 +52,7 @@ impl TrayIcon {
 
         Ok(Self {
             tooltip: tooltip.to_owned(),
+            start_menu_text: start_menu_text.to_owned(),
             show_menu_text: show_menu_text.to_owned(),
             open_config_text: open_config_text.to_owned(),
             about_text: about_text.to_owned(),
@@ -61,22 +65,6 @@ impl TrayIcon {
         unsafe {
             let _ = Shell_NotifyIconW(NIM_DELETE, &icon_data);
         }
-    }
-
-    pub fn show_notification(&self, hwnd: HWND, title: &str, message: &str) -> Result<()> {
-        let mut icon_data = notify_icon_data(hwnd, HICON::default(), &self.tooltip);
-        icon_data.uFlags = NIF_INFO;
-        icon_data.dwInfoFlags = NIIF_INFO;
-        copy_wide_text(title, &mut icon_data.szInfoTitle);
-        copy_wide_text(message, &mut icon_data.szInfo);
-
-        unsafe {
-            if !Shell_NotifyIconW(NIM_MODIFY, &icon_data).as_bool() {
-                return Err(Error::from_win32());
-            }
-        }
-
-        Ok(())
     }
 
     pub fn handle_callback(&self, hwnd: HWND, lparam: LPARAM) -> Result<bool> {
@@ -117,6 +105,12 @@ impl TrayIcon {
         let exit_text = wide_null(&self.exit_menu_text);
 
         unsafe {
+            AppendMenuW(
+                menu,
+                MF_STRING,
+                TRAY_MENU_START_ID,
+                PCWSTR(wide_null(&self.start_menu_text).as_ptr()),
+            )?;
             AppendMenuW(menu, MF_STRING, TRAY_MENU_SHOW_ID, PCWSTR(show_text.as_ptr()))?;
             AppendMenuW(
                 menu,

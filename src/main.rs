@@ -10,7 +10,6 @@ mod i18n;
 mod pet_window;
 #[allow(dead_code)]
 mod render;
-mod toast;
 mod tray_icon;
 mod ui;
 mod window_proc;
@@ -69,8 +68,6 @@ fn main() {
 }
 
 fn run() -> Result<()> {
-    let _ = toast::initialize();
-
     let config = Config::load()?;
     let language = config.language();
     let theme = config.theme();
@@ -127,7 +124,8 @@ fn run() -> Result<()> {
             .as_path(),
     )
     .map_err(|_| Error::from_win32())?;
-    let _pet_window = PetWindow::create(instance, hwnd, assets)?;
+    let pet_window = PetWindow::create(instance, hwnd, assets)?;
+    pet_window.hide();
     create_control_buttons(hwnd, instance)?;
     let config_link = HyperLinkText::create(
         hwnd,
@@ -163,6 +161,7 @@ fn run() -> Result<()> {
         hwnd,
         small_icon,
         main_window_title(language),
+        tray_menu_start_text(language),
         tray_menu_show_text(language),
         tray_menu_open_config_text(language),
         tray_menu_about_text(language),
@@ -175,6 +174,7 @@ fn run() -> Result<()> {
             theme,
             tray_icon,
             tray_check_box: tray_check_box.clone(),
+            pet_window,
             components: vec![
                 Box::new(config_link) as Box<dyn Component>,
                 Box::new(tray_check_box) as Box<dyn Component>,
@@ -258,6 +258,13 @@ fn tray_menu_show_text(language: i18n::Language) -> &'static str {
     match language {
         i18n::Language::Chinese => "显示主窗口",
         i18n::Language::English => "Show main window",
+    }
+}
+
+fn tray_menu_start_text(language: i18n::Language) -> &'static str {
+    match language {
+        i18n::Language::Chinese => "开始计时",
+        i18n::Language::English => "Start timer",
     }
 }
 

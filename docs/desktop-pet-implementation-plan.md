@@ -169,7 +169,7 @@ Likely changes:
 - Handle left-button press/move/release in the Pet window.
 - Drag the window using screen-coordinate deltas without activating it.
 - Treat a release with a small movement as a click.
-- Add a minimal right-click menu: hide Pet, show main window, exit.
+- Add a minimal right-click menu: show main window, exit.
 - Keep MVP hit testing rectangular; defer alpha hit testing and metadata
   hitboxes.
 - Keep click and drag thresholds as named constants with unit-testable helper
@@ -184,13 +184,14 @@ Tests and checks:
 
 Review boundary: input and command routing. No timer reset implementation.
 
-## STEP 7 — Integrate the reminder loop and remove Toast
+## STEP 7 — Integrate the reminder loop and remove Toast ✅ 已完成
 
 Goal: make the Pet the only timer-completion reminder.
 
 Likely changes:
 
 - Extend the existing timer completion path to show the Pet and play `jump`.
+- Hide the Pet with a short slide-out animation when a timer starts.
 - Keep the timer running while the main window is hidden to the tray.
 - On Pet acknowledgement, reset the remaining duration and automatically
   start the next interval.
