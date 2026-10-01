@@ -77,6 +77,7 @@ struct CharacterManifest {
 struct AnimationManifest {
     pattern: String,
     frame_count: usize,
+    frame_duration_ms: Option<u64>,
     #[serde(rename = "loop")]
     loop_mode: bool,
 }
@@ -125,7 +126,7 @@ fn load_animation(
         .collect::<Result<Vec<_>, _>>()?;
     let clip = AnimationClip::new(
         (0..frames.len()).map(|id| Frame { id: id as u32 }).collect(),
-        Duration::from_millis(default_frame_duration_ms),
+        Duration::from_millis(animation.frame_duration_ms.unwrap_or(default_frame_duration_ms)),
         if animation.loop_mode {
             LoopMode::Loop
         } else {

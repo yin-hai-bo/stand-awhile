@@ -136,7 +136,7 @@ Tests and checks:
 
 Review boundary: window lifetime, styles, placement, and renderer hookup.
 
-## STEP 5 — Connect animation playback to the Pet window
+## STEP 5 — Connect animation playback to the Pet window ✅ 已完成
 
 Goal: display the cat `idle` animation and one-shot `jump` without blocking the
 message loop.
