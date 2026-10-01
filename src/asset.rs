@@ -58,6 +58,7 @@ pub struct PreparedAnimation {
 
 pub struct CatAnimations {
     pub idle: PreparedAnimation,
+    pub walk: PreparedAnimation,
     pub jump: PreparedAnimation,
 }
 
@@ -90,9 +91,10 @@ pub fn load_cat_animations(_gdi_plus: &GdiPlus, asset_root: &Path) -> Result<Cat
         .ok_or_else(|| AssetError::InvalidManifest("missing cat character".to_owned()))?;
 
     let idle = load_animation(asset_root, cat, "idle", manifest.default_frame_duration_ms)?;
+    let walk = load_animation(asset_root, cat, "walk", manifest.default_frame_duration_ms)?;
     let jump = load_animation(asset_root, cat, "jump", manifest.default_frame_duration_ms)?;
 
-    Ok(CatAnimations { idle, jump })
+    Ok(CatAnimations { idle, walk, jump })
 }
 
 fn load_manifest(path: &Path) -> Result<Manifest, AssetError> {
@@ -272,6 +274,7 @@ mod tests {
         .expect("checked-in manifest should be valid");
         let cat = manifest.characters.get("cat").expect("cat should be present");
         assert_eq!(cat.animations["idle"].frame_count, 10);
+        assert_eq!(cat.animations["walk"].frame_count, 10);
         assert_eq!(cat.animations["jump"].frame_count, 8);
     }
 
@@ -305,6 +308,7 @@ mod tests {
         .expect("checked-in cat assets should load");
 
         assert_eq!(assets.idle.frames.len(), 10);
+        assert_eq!(assets.walk.frames.len(), 10);
         assert_eq!(assets.jump.frames.len(), 8);
         assert_eq!(
             assets.idle.frames[0].pixels.len(),

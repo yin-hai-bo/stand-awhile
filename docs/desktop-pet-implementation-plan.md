@@ -262,8 +262,10 @@ Acceptance checklist:
 
 ## Deferred work after the MVP
 
+- ✅ 原地播放 `walk` 动画且不改变窗口位置；
 - dog character selection and a general character catalog;
-- autonomous movement using `walk`;
+- configurable speech bubbles that cycle through messages with per-message
+  display durations and configurable gaps when the bubble is hidden;
 - alpha-aware hit testing and per-frame hitboxes;
 - saved position and Pet settings;
 - richer context menu and interaction states;

@@ -1,4 +1,7 @@
-use std::{sync::OnceLock, time::Instant};
+use std::{
+    sync::OnceLock,
+    time::{Duration, Instant},
+};
 
 use windows::{
     Win32::{
@@ -30,6 +33,7 @@ const PET_TIMER_ID: usize = 1;
 const PET_TIMER_INTERVAL_MS: u32 = 16;
 const CLICK_DRAG_THRESHOLD: i32 = 4;
 const MIN_VISIBLE_PET_SIZE: i32 = 24;
+const WALK_START_DELAY: Duration = Duration::from_secs(2);
 
 pub const WM_PET_COMMAND: u32 = WM_APP + 2;
 pub const PET_COMMAND_ACKNOWLEDGE: usize = 1;
@@ -44,6 +48,7 @@ const HIDE_ANIMATION_DURATION_MS: u128 = 180;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ActiveClip {
     Idle,
+    Walk,
     Jump,
 }
 
@@ -52,6 +57,7 @@ struct PetWindowState {
     surface: PixelSurface,
     position: (i32, i32),
     idle: PreparedAnimation,
+    walk: PreparedAnimation,
     jump: PreparedAnimation,
     player: AnimationPlayer,
     active_clip: ActiveClip,
@@ -59,6 +65,7 @@ struct PetWindowState {
     owner: HWND,
     drag: Option<DragState>,
     hide_animation: Option<HideAnimation>,
+    next_walk_at: Instant,
 }
 
 struct DragState {
@@ -116,6 +123,7 @@ impl PetWindow {
                 return Err(error);
             }
         };
+        let now = Instant::now();
         let player = AnimationPlayer::new(animations.idle.clip.clone());
         attach_state(
             hwnd,
@@ -124,6 +132,7 @@ impl PetWindow {
                 surface,
                 position,
                 idle: animations.idle,
+                walk: animations.walk,
                 jump: animations.jump,
                 player,
                 active_clip: ActiveClip::Idle,
@@ -131,14 +140,12 @@ impl PetWindow {
                 owner,
                 drag: None,
                 hide_animation: None,
+                next_walk_at: now + WALK_START_DELAY,
             },
         );
 
         let pet = Self { hwnd };
-        state_mut(pet.hwnd)
-            .ok_or_else(Error::from_win32)?
-            .player
-            .play(Instant::now());
+        state_mut(pet.hwnd).ok_or_else(Error::from_win32)?.player.play(now);
         let state = state_mut(pet.hwnd).ok_or_else(Error::from_win32)?;
         update_frame(state)?;
         unsafe {
@@ -294,6 +301,7 @@ unsafe extern "system" fn pet_window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
         WM_TIMER if wparam.0 == PET_TIMER_ID => {
             if let Some(state) = state_mut(hwnd) {
                 let _ = update_hide_animation(hwnd, state);
+                let _ = update_idle_walk(hwnd, state);
                 let _ = update_frame(state);
             }
             LRESULT(0)
@@ -343,9 +351,46 @@ fn start_jump(state: &mut PetWindowState) {
     state.active_clip = ActiveClip::Jump;
     state.player = AnimationPlayer::new(state.jump.clip.clone());
     state.player.play(Instant::now());
+    state.next_walk_at = Instant::now() + WALK_START_DELAY;
+}
+
+fn start_walk(state: &mut PetWindowState, now: Instant) {
+    state.active_clip = ActiveClip::Walk;
+    state.player = AnimationPlayer::new(state.walk.clip.clone());
+    state.player.play(now);
+}
+
+fn start_idle(state: &mut PetWindowState, now: Instant) {
+    state.active_clip = ActiveClip::Idle;
+    state.player = AnimationPlayer::new(state.idle.clip.clone());
+    state.player.play(now);
+    state.next_walk_at = now + WALK_START_DELAY;
+}
+
+fn update_idle_walk(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
+    if state.hide_animation.is_some()
+        || state.drag.is_some()
+        || !unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(hwnd).as_bool() }
+        || state.active_clip == ActiveClip::Jump
+    {
+        return Ok(());
+    }
+
+    let now = Instant::now();
+    if state.active_clip == ActiveClip::Idle {
+        if now >= state.next_walk_at {
+            start_walk(state, now);
+        }
+        return Ok(());
+    }
+
+    Ok(())
 }
 
 fn begin_drag(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
+    if state.active_clip == ActiveClip::Walk {
+        start_idle(state, Instant::now());
+    }
     let mut pointer = POINT::default();
     unsafe { GetCursorPos(&mut pointer)? };
     let mut window = RECT::default();
@@ -550,6 +595,7 @@ fn update_frame(state: &mut PetWindowState) -> Result<()> {
 
     let frames = match state.active_clip {
         ActiveClip::Idle => &state.idle.frames,
+        ActiveClip::Walk => &state.walk.frames,
         ActiveClip::Jump => &state.jump.frames,
     };
     let frame = frames.get(selection.frame.id as usize).ok_or_else(Error::from_win32)?;
