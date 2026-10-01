@@ -235,7 +235,7 @@ Tests and checks:
 
 Review boundary: coordinate conversion, monitor selection, and shutdown.
 
-## STEP 9 — Final verification and follow-up seams
+## STEP 9 — Final verification and follow-up seams ✅ 已完成
 
 Goal: make the MVP easy to review and leave measured extension points.
 
