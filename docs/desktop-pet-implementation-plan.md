@@ -113,7 +113,7 @@ Tests and checks:
 
 Review boundary: static rendering only. No timer integration or drag logic.
 
-## STEP 4 — Create the independent Pet window shell
+## STEP 4 — Create the independent Pet window shell ✅ 已完成
 
 Goal: create and destroy a usable Pet window without changing reminder logic.
 

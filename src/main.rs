@@ -7,6 +7,7 @@ pub(crate) mod asset;
 mod config;
 mod gdi;
 mod i18n;
+mod pet_window;
 #[allow(dead_code)]
 mod render;
 mod toast;
@@ -14,7 +15,9 @@ mod tray_icon;
 mod ui;
 mod window_proc;
 
+use crate::asset::load_cat_animations;
 use crate::config::{Config, open_config_directory, set_tray_when_close, show_config_open_error};
+use crate::pet_window::PetWindow;
 use windows::Win32::{
     Foundation::{HINSTANCE, RECT},
     System::LibraryLoader::GetModuleHandleW,
@@ -116,7 +119,15 @@ fn run() -> Result<()> {
         )
     }?;
 
-    let _gdi_plus = GdiPlus::new()?;
+    let gdi_plus = GdiPlus::new()?;
+    let assets = load_cat_animations(
+        &gdi_plus,
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("assets/pets/cat-dog")
+            .as_path(),
+    )
+    .map_err(|_| Error::from_win32())?;
+    let _pet_window = PetWindow::create(instance, &assets.idle.frames[0])?;
     create_control_buttons(hwnd, instance)?;
     let config_link = HyperLinkText::create(
         hwnd,
