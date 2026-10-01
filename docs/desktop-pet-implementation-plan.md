@@ -210,24 +210,27 @@ Tests and checks:
 
 Review boundary: timer/Pet coordination and notification removal.
 
-## STEP 8 — Add DPI, monitor bounds, and lifecycle hardening
+## STEP 8 — Add DPI, monitor bounds, and lifecycle hardening ✅ 已完成
 
 Goal: make the Pet reliable on high-DPI and multi-monitor desktops.
 
 Likely changes:
 
-- Handle `WM_DPICHANGED` for the Pet window.
-- Recreate or resize the render surface using the target monitor DPI.
-- Allow dragging across monitors and clamp the Pet to the current work area.
+- Keep the process and main window DPI-aware without scaling the Pet's
+  pixel-sized PNG assets a second time.
+- Allow dragging across monitors and select the target monitor from the
+  pointer position.
+- Keep at least a visible portion of the Pet during dragging, while allowing
+  the rest of it to be clipped by the screen edge.
 - Keep the initial placement on the primary monitor.
+- Move a partially clipped Pet back into the work area before a reminder.
 - Ensure Pet destruction precedes renderer/resource teardown.
 - Verify topmost behavior does not use an infinite foreground/topmost loop.
 
 Tests and checks:
 
-- logical-to-physical coordinate helpers;
 - clamping at each monitor edge;
-- simulated DPI changes preserve the Pet anchor;
+- partially clipped drag positions retain a visible portion;
 - manual two-monitor and mixed-scale smoke checks.
 
 Review boundary: coordinate conversion, monitor selection, and shutdown.
@@ -248,7 +251,7 @@ Likely changes:
 
 Acceptance checklist:
 
-- application starts with Pet hidden;
+- application starts with Pet visible while the timer has not started;
 - timer completion shows the cat and plays `jump`;
 - Pet can be dragged and clicked;
 - click hides Pet and starts the next interval;

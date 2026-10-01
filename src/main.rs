@@ -20,12 +20,16 @@ use crate::pet_window::PetWindow;
 use windows::Win32::{
     Foundation::{HINSTANCE, RECT},
     System::LibraryLoader::GetModuleHandleW,
+    UI::HiDpi::{
+        AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem,
+        SetProcessDpiAwarenessContext,
+    },
     UI::WindowsAndMessaging::{
-        AdjustWindowRectEx, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DispatchMessageW, GetMessageW, GetSystemMetrics,
-        HICON, IDC_ARROW, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTCOLOR, LoadCursorW, LoadIconW, LoadImageW,
-        MB_ICONERROR, MB_OK, MSG, MessageBoxW, RegisterClassExW, SM_CXICON, SM_CXSCREEN, SM_CXSMICON, SM_CYICON,
-        SM_CYSCREEN, SM_CYSMICON, SW_SHOW, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WNDCLASSEXW, WS_CAPTION,
-        WS_CLIPCHILDREN, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
+        CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DispatchMessageW, GetMessageW, GetSystemMetrics, HICON, IDC_ARROW,
+        IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTCOLOR, LoadCursorW, LoadIconW, LoadImageW, MB_ICONERROR, MB_OK, MSG,
+        MessageBoxW, RegisterClassExW, SM_CXICON, SM_CXSCREEN, SM_CXSMICON, SM_CYICON, SM_CYSCREEN, SM_CYSMICON,
+        SW_SHOW, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WNDCLASSEXW, WS_CAPTION, WS_CLIPCHILDREN,
+        WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
     },
 };
 use windows::core::{Error, PCWSTR, Result, w};
@@ -68,6 +72,7 @@ fn main() {
 }
 
 fn run() -> Result<()> {
+    unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)? };
     let config = Config::load()?;
     let language = config.language();
     let theme = config.theme();
@@ -98,7 +103,10 @@ fn run() -> Result<()> {
 
     let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN | WS_VISIBLE;
     let ex_style = WINDOW_EX_STYLE::default();
-    let (window_x, window_y) = centered_window_position(style, ex_style)?;
+    let dpi = unsafe { GetDpiForSystem() }.max(96);
+    let window_width = scale_dimension(WINDOW_WIDTH, dpi);
+    let window_height = scale_dimension(WINDOW_HEIGHT, dpi);
+    let (window_x, window_y) = centered_window_position(style, ex_style, window_width, window_height, dpi)?;
     let hwnd = unsafe {
         CreateWindowExW(
             ex_style,
@@ -107,8 +115,8 @@ fn run() -> Result<()> {
             style,
             window_x,
             window_y,
-            WINDOW_WIDTH,
-            WINDOW_HEIGHT,
+            window_width,
+            window_height,
             None,
             None,
             Some(instance),
@@ -125,7 +133,6 @@ fn run() -> Result<()> {
     )
     .map_err(|_| Error::from_win32())?;
     let pet_window = PetWindow::create(instance, hwnd, assets)?;
-    pet_window.hide();
     create_control_buttons(hwnd, instance)?;
     let config_link = HyperLinkText::create(
         hwnd,
@@ -212,16 +219,19 @@ fn run() -> Result<()> {
 fn centered_window_position(
     style: windows::Win32::UI::WindowsAndMessaging::WINDOW_STYLE,
     ex_style: WINDOW_EX_STYLE,
+    client_width: i32,
+    client_height: i32,
+    dpi: u32,
 ) -> Result<(i32, i32)> {
     let mut rect = RECT {
         left: 0,
         top: 0,
-        right: WINDOW_WIDTH,
-        bottom: WINDOW_HEIGHT,
+        right: client_width,
+        bottom: client_height,
     };
 
     unsafe {
-        AdjustWindowRectEx(&mut rect, style, false, ex_style)?;
+        AdjustWindowRectExForDpi(&mut rect, style, false, ex_style, dpi)?;
     }
 
     let window_width = rect.right - rect.left;
@@ -234,6 +244,10 @@ fn centered_window_position(
     let y = (screen_height - window_height) / 2;
 
     Ok((x, y))
+}
+
+fn scale_dimension(value: i32, dpi: u32) -> i32 {
+    ((value as i64 * dpi as i64 + 95) / 96) as i32
 }
 
 fn wide_null(value: &str) -> Vec<u16> {

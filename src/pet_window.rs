@@ -3,16 +3,16 @@ use std::{sync::OnceLock, time::Instant};
 use windows::{
     Win32::{
         Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+        Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, MonitorFromWindow},
         UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture},
         UI::WindowsAndMessaging::{
             AppendMenuW, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
             DestroyMenu, DestroyWindow, GWLP_USERDATA, GetCursorPos, GetWindowLongPtrW, GetWindowRect, HWND_TOPMOST,
             IDC_ARROW, KillTimer, LoadCursorW, MF_STRING, RegisterClassExW, SPI_GETWORKAREA, SW_HIDE,
-            SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_SHOWWINDOW, SetTimer,
-            SetWindowLongPtrW, SetWindowPos, ShowWindow, SystemParametersInfoW, TPM_LEFTALIGN, TPM_RETURNCMD,
-            TPM_RIGHTBUTTON, TrackPopupMenuEx, WM_APP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE,
-            WM_NCDESTROY, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-            WS_POPUP,
+            SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE, SetTimer, SetWindowLongPtrW,
+            SetWindowPos, ShowWindow, SystemParametersInfoW, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+            TrackPopupMenuEx, WM_APP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY,
+            WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
         },
     },
     core::{Error, PCWSTR, Result, w},
@@ -29,6 +29,7 @@ const PET_MARGIN: i32 = 24;
 const PET_TIMER_ID: usize = 1;
 const PET_TIMER_INTERVAL_MS: u32 = 16;
 const CLICK_DRAG_THRESHOLD: i32 = 4;
+const MIN_VISIBLE_PET_SIZE: i32 = 24;
 
 pub const WM_PET_COMMAND: u32 = WM_APP + 2;
 pub const PET_COMMAND_ACKNOWLEDGE: usize = 1;
@@ -141,15 +142,6 @@ impl PetWindow {
         let state = state_mut(pet.hwnd).ok_or_else(Error::from_win32)?;
         update_frame(state)?;
         unsafe {
-            let _ = SetWindowPos(
-                pet.hwnd,
-                Some(HWND_TOPMOST),
-                position.0,
-                position.1,
-                width,
-                height,
-                SWP_NOACTIVATE | SWP_SHOWWINDOW,
-            );
             let _ = ShowWindow(pet.hwnd, SW_SHOWNOACTIVATE);
             let _ = SetTimer(Some(pet.hwnd), PET_TIMER_ID, PET_TIMER_INTERVAL_MS, None);
         }
@@ -178,14 +170,17 @@ impl PetWindow {
         if !unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(self.hwnd).as_bool() } {
             return Ok(());
         }
-        begin_hide_animation(state)
+        begin_hide_animation(self.hwnd, state)
     }
 
     #[allow(dead_code)]
     pub fn show(&self) {
         if let Some(state) = state_mut(self.hwnd) {
             cancel_hide_animation(state);
-            let position = state.position;
+            let size = (state.surface.width() as i32, state.surface.height() as i32);
+            let position = monitor_work_area(self.hwnd)
+                .map(|work_area| clamp_position(state.position, size, work_area))
+                .unwrap_or(state.position);
             let _ = set_position(self.hwnd, state, position);
         }
         unsafe {
@@ -194,8 +189,8 @@ impl PetWindow {
     }
 }
 
-fn begin_hide_animation(state: &mut PetWindowState) -> Result<()> {
-    let work_area = primary_work_area()?;
+fn begin_hide_animation(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
+    let work_area = monitor_work_area(hwnd)?;
     let height = state.surface.height() as i32;
     state.hide_animation = Some(HideAnimation {
         started_at: Instant::now(),
@@ -287,7 +282,7 @@ fn state_mut(hwnd: HWND) -> Option<&'static mut PetWindowState> {
     unsafe { raw.as_mut() }
 }
 
-unsafe extern "system" fn pet_window_proc(hwnd: HWND, msg: u32, _wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+unsafe extern "system" fn pet_window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_NCCREATE => {
             let create = unsafe { &*(lparam.0 as *const CREATESTRUCTW) };
@@ -296,7 +291,7 @@ unsafe extern "system" fn pet_window_proc(hwnd: HWND, msg: u32, _wparam: WPARAM,
             }
             LRESULT(1)
         }
-        WM_TIMER if _wparam.0 == PET_TIMER_ID => {
+        WM_TIMER if wparam.0 == PET_TIMER_ID => {
             if let Some(state) = state_mut(hwnd) {
                 let _ = update_hide_animation(hwnd, state);
                 let _ = update_frame(state);
@@ -317,7 +312,7 @@ unsafe extern "system" fn pet_window_proc(hwnd: HWND, msg: u32, _wparam: WPARAM,
         }
         WM_LBUTTONUP => {
             if let Some(state) = state_mut(hwnd) {
-                let _ = end_drag(state);
+                let _ = end_drag(hwnd, state);
             }
             LRESULT(0)
         }
@@ -376,14 +371,18 @@ fn move_drag(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
     let mut pointer = POINT::default();
     unsafe { GetCursorPos(&mut pointer)? };
     drag.moved = drag.moved || movement_exceeded(drag.pointer_start, pointer);
-    let position = (
-        drag.window_start.x + pointer.x - drag.pointer_start.x,
-        drag.window_start.y + pointer.y - drag.pointer_start.y,
+    let position = clamp_drag_position(
+        (
+            drag.window_start.x + pointer.x - drag.pointer_start.x,
+            drag.window_start.y + pointer.y - drag.pointer_start.y,
+        ),
+        (state.surface.width() as i32, state.surface.height() as i32),
+        monitor_work_area_at_point(pointer)?,
     );
     set_position(hwnd, state, position)
 }
 
-fn end_drag(state: &mut PetWindowState) -> Result<()> {
+fn end_drag(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
     let Some(drag) = state.drag.take() else {
         return Ok(());
     };
@@ -391,7 +390,7 @@ fn end_drag(state: &mut PetWindowState) -> Result<()> {
         let _ = ReleaseCapture();
     }
     if !drag.moved {
-        let _ = begin_hide_animation(state);
+        let _ = begin_hide_animation(hwnd, state);
         post_pet_command(state.owner, PET_COMMAND_ACKNOWLEDGE);
     }
     Ok(())
@@ -495,6 +494,45 @@ fn set_position(hwnd: HWND, state: &mut PetWindowState, position: (i32, i32)) ->
     Ok(())
 }
 
+fn monitor_work_area(hwnd: HWND) -> Result<RECT> {
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    monitor_work_area_for_monitor(monitor)
+}
+
+fn monitor_work_area_at_point(point: POINT) -> Result<RECT> {
+    let monitor = unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST) };
+    monitor_work_area_for_monitor(monitor)
+}
+
+fn monitor_work_area_for_monitor(monitor: windows::Win32::Graphics::Gdi::HMONITOR) -> Result<RECT> {
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if !unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
+        return Err(Error::from_win32());
+    }
+    Ok(info.rcWork)
+}
+
+fn clamp_position(position: (i32, i32), size: (i32, i32), work_area: RECT) -> (i32, i32) {
+    let min_x = work_area.left;
+    let min_y = work_area.top;
+    let max_x = (work_area.right - size.0).max(min_x);
+    let max_y = (work_area.bottom - size.1).max(min_y);
+    (position.0.clamp(min_x, max_x), position.1.clamp(min_y, max_y))
+}
+
+fn clamp_drag_position(position: (i32, i32), size: (i32, i32), work_area: RECT) -> (i32, i32) {
+    let visible_width = MIN_VISIBLE_PET_SIZE.min(size.0);
+    let visible_height = MIN_VISIBLE_PET_SIZE.min(size.1);
+    let min_x = work_area.left - size.0 + visible_width;
+    let min_y = work_area.top - size.1 + visible_height;
+    let max_x = work_area.right - visible_width;
+    let max_y = work_area.bottom - visible_height;
+    (position.0.clamp(min_x, max_x), position.1.clamp(min_y, max_y))
+}
+
 fn update_frame(state: &mut PetWindowState) -> Result<()> {
     let now = Instant::now();
     let mut selection = state.player.update(now);
@@ -540,7 +578,10 @@ mod tests {
     use windows::Win32::Foundation::POINT;
     use windows::Win32::Foundation::RECT;
 
-    use super::{ActiveClip, PlaybackState, hide_target_y, movement_exceeded, should_return_to_idle};
+    use super::{
+        ActiveClip, PlaybackState, clamp_drag_position, clamp_position, hide_target_y, movement_exceeded,
+        should_return_to_idle,
+    };
 
     #[test]
     fn finished_jump_returns_to_idle() {
@@ -566,5 +607,30 @@ mod tests {
         };
         assert_eq!(hide_target_y(120, 100, work_area), 0);
         assert_eq!(hide_target_y(1000, 100, work_area), 1100);
+    }
+
+    #[test]
+    fn clamps_pet_position_to_the_monitor_work_area() {
+        let work_area = RECT {
+            left: 0,
+            top: 0,
+            right: 1000,
+            bottom: 800,
+        };
+        assert_eq!(clamp_position((-20, -30), (100, 100), work_area), (0, 0));
+        assert_eq!(clamp_position((950, 750), (100, 100), work_area), (900, 700));
+    }
+
+    #[test]
+    fn allows_pet_to_be_partially_clipped_while_dragging() {
+        let work_area = RECT {
+            left: 0,
+            top: 0,
+            right: 1_000,
+            bottom: 800,
+        };
+
+        assert_eq!(clamp_drag_position((-200, -200), (100, 100), work_area), (-76, -76));
+        assert_eq!(clamp_drag_position((1_000, 800), (100, 100), work_area), (976, 776));
     }
 }
