@@ -19,6 +19,7 @@ Designed to be unobtrusive and minimal, it helps reduce the health risks of prol
 - 🛠 **Customizable**:
   - Adjust reminder intervals
   - Choose the Pet character (`cat` or `dog`) in the configuration file
+  - Configure speech bubble messages, display durations, and hidden gaps
   - Choose the application language and theme
 - 🖥 **Native Experience**: Pure Windows application, no browser dependencies
 

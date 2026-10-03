@@ -25,6 +25,19 @@ manifest 中的每个角色建立目录；当前每个角色都要求存在 `idl
 角色通过配置文件中的 `character` 字段选择，默认值为 `cat`。例如将其设置
 为 `dog` 后，下一次启动程序会使用 Dog 资源；未知角色会回退到 `cat`。
 
+气泡文本通过配置文件中的 `speech_bubble` 字段配置。每条消息包含 `text`
+和 `display_duration_ms`，消息之间的隐藏间隔由 `hidden_gap_ms` 配置。例如：
+
+```json
+"speech_bubble": {
+  "messages": [
+    { "text": "Time to stretch!", "display_duration_ms": 5000 },
+    { "text": "站起来活动一下吧！", "display_duration_ms": 4000 }
+  ],
+  "hidden_gap_ms": 10000
+}
+```
+
 PNG 的宽高按原始像素尺寸处理。Pet 窗口和分层窗口使用的 BGRA 表面直接使用
 这些尺寸；程序不会再次对已经解码的 PNG 像素应用 DPI 缩放。
 
@@ -55,6 +68,8 @@ cargo build --release
    并且可以重新打开或退出程序。
 9. 在配置文件中将 `character` 设置为 `dog`，重新启动程序，确认 Pet 使用
    Dog 的 `idle`、`walk` 和 `jump` 动画。
+10. 配置两条气泡消息，确认消息按顺序显示，各自持续配置的时长，并在消息
+    之间保持配置的隐藏间隔；开始计时、暂停和重置时确认气泡也会隐藏。
 
 ## 延后工作
 

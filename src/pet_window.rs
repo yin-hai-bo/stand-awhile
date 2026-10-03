@@ -25,6 +25,8 @@ use crate::{
     animation::{AnimationPlayer, PlaybackState},
     asset::{CharacterAnimations, PreparedAnimation},
     render::{LayeredRenderer, PixelSurface, SurfacePoint},
+    speech_bubble::SpeechBubbleConfig,
+    speech_bubble_window::SpeechBubbleController,
 };
 
 const PET_WINDOW_CLASS: PCWSTR = w!("YHB-StandAwhilePetWindow");
@@ -34,6 +36,7 @@ const PET_TIMER_INTERVAL_MS: u32 = 16;
 const CLICK_DRAG_THRESHOLD: i32 = 4;
 const MIN_VISIBLE_PET_SIZE: i32 = 24;
 const WALK_START_DELAY: Duration = Duration::from_secs(2);
+const SPEECH_BUBBLE_INITIAL_DELAY: Duration = Duration::from_millis(500);
 
 pub const WM_PET_COMMAND: u32 = WM_APP + 2;
 pub const PET_COMMAND_ACKNOWLEDGE: usize = 1;
@@ -66,6 +69,7 @@ struct PetWindowState {
     drag: Option<DragState>,
     hide_animation: Option<HideAnimation>,
     next_walk_at: Instant,
+    speech_bubble: SpeechBubbleController,
 }
 
 struct DragState {
@@ -86,7 +90,12 @@ pub struct PetWindow {
 }
 
 impl PetWindow {
-    pub fn create(instance: HINSTANCE, owner: HWND, animations: CharacterAnimations) -> Result<Self> {
+    pub fn create(
+        instance: HINSTANCE,
+        owner: HWND,
+        animations: CharacterAnimations,
+        speech_bubble_config: SpeechBubbleConfig,
+    ) -> Result<Self> {
         register_class(instance)?;
 
         let frame = &animations.idle.frames[0];
@@ -123,6 +132,15 @@ impl PetWindow {
                 return Err(error);
             }
         };
+        let speech_bubble = match SpeechBubbleController::create(instance, hwnd, speech_bubble_config) {
+            Ok(speech_bubble) => speech_bubble,
+            Err(error) => {
+                unsafe {
+                    let _ = DestroyWindow(hwnd);
+                }
+                return Err(error);
+            }
+        };
         let now = Instant::now();
         let player = AnimationPlayer::new(animations.idle.clip.clone());
         attach_state(
@@ -141,6 +159,7 @@ impl PetWindow {
                 drag: None,
                 hide_animation: None,
                 next_walk_at: now + WALK_START_DELAY,
+                speech_bubble,
             },
         );
 
@@ -166,6 +185,7 @@ impl PetWindow {
     pub fn hide(&self) {
         if let Some(state) = state_mut(self.hwnd) {
             cancel_hide_animation(state);
+            state.speech_bubble.hide();
         }
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_HIDE);
@@ -197,6 +217,7 @@ impl PetWindow {
 }
 
 fn begin_hide_animation(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
+    state.speech_bubble.hide();
     let work_area = monitor_work_area(hwnd)?;
     let height = state.surface.height() as i32;
     state.hide_animation = Some(HideAnimation {
@@ -303,6 +324,7 @@ unsafe extern "system" fn pet_window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
                 let _ = update_hide_animation(hwnd, state);
                 let _ = update_idle_walk(hwnd, state);
                 let _ = update_frame(state);
+                let _ = update_speech_bubble(hwnd, state);
             }
             LRESULT(0)
         }
@@ -348,10 +370,12 @@ unsafe extern "system" fn pet_window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
 }
 
 fn start_jump(state: &mut PetWindowState) {
+    let now = Instant::now();
     state.active_clip = ActiveClip::Jump;
     state.player = AnimationPlayer::new(state.jump.clip.clone());
-    state.player.play(Instant::now());
-    state.next_walk_at = Instant::now() + WALK_START_DELAY;
+    state.player.play(now);
+    state.next_walk_at = now + WALK_START_DELAY;
+    state.speech_bubble.start(now, SPEECH_BUBBLE_INITIAL_DELAY);
 }
 
 fn start_walk(state: &mut PetWindowState, now: Instant) {
@@ -536,7 +560,25 @@ fn set_position(hwnd: HWND, state: &mut PetWindowState, position: (i32, i32)) ->
             y: position.1,
         },
     )?;
+    state
+        .speech_bubble
+        .set_position(position, (state.surface.width() as i32, state.surface.height() as i32))?;
     Ok(())
+}
+
+fn update_speech_bubble(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
+    if state.hide_animation.is_some()
+        || !unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(hwnd).as_bool() }
+    {
+        state.speech_bubble.hide();
+        return Ok(());
+    }
+
+    state.speech_bubble.update(
+        state.position,
+        (state.surface.width() as i32, state.surface.height() as i32),
+        Instant::now(),
+    )
 }
 
 fn monitor_work_area(hwnd: HWND) -> Result<RECT> {

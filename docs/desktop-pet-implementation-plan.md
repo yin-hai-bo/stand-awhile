@@ -258,14 +258,14 @@ Acceptance checklist:
 - tray-hidden mode still works;
 - no Toast or tray balloon reminder remains;
 - transparent edges and high-DPI placement are correct;
+- configured speech messages cycle with their display durations and hidden gaps;
 - all focused tests pass.
 
 ## Deferred work after the MVP
 
 - ✅ 原地播放 `walk` 动画且不改变窗口位置；
 - ✅ dog 角色选择与通用角色目录；角色通过配置文件中的 `character` 字段选择，默认值为 `cat`；
-- configurable speech bubbles that cycle through messages with per-message
-  display durations and configurable gaps when the bubble is hidden;
+- ✅ 可配置气泡文本；消息支持独立显示时长，消息之间支持配置隐藏间隔；
 - alpha-aware hit testing and per-frame hitboxes;
 - saved position and Pet settings;
 - richer context menu and interaction states;

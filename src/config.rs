@@ -13,6 +13,7 @@ use windows::Win32::{
 use windows::core::{Error, HRESULT, PCWSTR, PWSTR, Result, w};
 
 use crate::i18n::{Language, main_window_title, resolve_language};
+use crate::speech_bubble::{SpeechBubbleConfig, SpeechMessage};
 use crate::ui::theme::{Theme, resolve_theme};
 
 const APP_DIRECTORY_NAME: &str = "yhb";
@@ -24,6 +25,9 @@ const DEFAULT_TRAY_WHEN_CLOSE: bool = false;
 const DEFAULT_LANGUAGE: &str = "auto";
 const DEFAULT_THEME: &str = "system";
 const DEFAULT_CHARACTER: &str = "cat";
+const DEFAULT_SPEECH_MESSAGE: &str = "Time to stand up and stretch!";
+const DEFAULT_SPEECH_DURATION_MS: u64 = 5_000;
+const DEFAULT_SPEECH_HIDDEN_GAP_MS: u64 = 10_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
@@ -32,6 +36,7 @@ pub struct Config {
     pub language: String,
     pub theme: String,
     pub character: String,
+    pub speech_bubble: SpeechBubbleConfig,
 }
 
 impl Default for Config {
@@ -42,6 +47,7 @@ impl Default for Config {
             language: DEFAULT_LANGUAGE.to_owned(),
             theme: DEFAULT_THEME.to_owned(),
             character: DEFAULT_CHARACTER.to_owned(),
+            speech_bubble: default_speech_bubble(),
         }
     }
 }
@@ -53,6 +59,19 @@ struct ConfigFile {
     language: Option<String>,
     theme: Option<String>,
     character: Option<String>,
+    speech_bubble: Option<SpeechBubbleFile>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct SpeechBubbleFile {
+    messages: Vec<SpeechMessageFile>,
+    hidden_gap_ms: u64,
+}
+
+#[derive(Deserialize, Serialize)]
+struct SpeechMessageFile {
+    text: String,
+    display_duration_ms: u64,
 }
 
 impl Config {
@@ -68,6 +87,10 @@ impl Config {
             language: file.language.unwrap_or_else(|| DEFAULT_LANGUAGE.to_owned()),
             theme: file.theme.unwrap_or_else(|| DEFAULT_THEME.to_owned()),
             character: file.character.unwrap_or_else(|| DEFAULT_CHARACTER.to_owned()),
+            speech_bubble: file
+                .speech_bubble
+                .map(speech_bubble_from_file)
+                .unwrap_or_else(default_speech_bubble),
         })
     }
 
@@ -87,11 +110,50 @@ impl Config {
             language: Some(self.language.clone()),
             theme: Some(self.theme.clone()),
             character: Some(self.character.clone()),
+            speech_bubble: Some(speech_bubble_to_file(&self.speech_bubble)),
         };
         let contents = serde_json::to_string_pretty(&file)
             .map(|json| format!("{json}\n"))
             .map_err(|error| Error::new(windows::core::HRESULT(0x8000_4005u32 as i32), error.to_string()))?;
         fs::write(path, contents).map_err(io_error_to_win_error)
+    }
+}
+
+fn default_speech_bubble() -> SpeechBubbleConfig {
+    SpeechBubbleConfig {
+        messages: vec![SpeechMessage {
+            text: DEFAULT_SPEECH_MESSAGE.to_owned(),
+            display_duration: std::time::Duration::from_millis(DEFAULT_SPEECH_DURATION_MS),
+        }],
+        hidden_gap: std::time::Duration::from_millis(DEFAULT_SPEECH_HIDDEN_GAP_MS),
+    }
+}
+
+fn speech_bubble_from_file(file: SpeechBubbleFile) -> SpeechBubbleConfig {
+    SpeechBubbleConfig {
+        messages: file
+            .messages
+            .into_iter()
+            .map(|message| SpeechMessage {
+                text: message.text,
+                display_duration: std::time::Duration::from_millis(message.display_duration_ms),
+            })
+            .collect(),
+        hidden_gap: std::time::Duration::from_millis(file.hidden_gap_ms),
+    }
+}
+
+fn speech_bubble_to_file(config: &SpeechBubbleConfig) -> SpeechBubbleFile {
+    SpeechBubbleFile {
+        messages: config
+            .messages
+            .iter()
+            .map(|message| SpeechMessageFile {
+                text: message.text.clone(),
+                display_duration_ms: message.display_duration.as_millis() as u64,
+            })
+            .collect(),
+        hidden_gap_ms: config.hidden_gap.as_millis() as u64,
     }
 }
 
@@ -212,5 +274,6 @@ mod tests {
         assert_eq!(config.language, "auto");
         assert_eq!(config.theme, "system");
         assert_eq!(config.character, "cat");
+        assert_eq!(config.speech_bubble.messages.len(), 1);
     }
 }
