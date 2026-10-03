@@ -44,10 +44,47 @@ impl From<serde_json::Error> for AssetError {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FrameHitbox {
+    pub left: u32,
+    pub top: u32,
+    pub right: u32,
+    pub bottom: u32,
+}
+
+impl FrameHitbox {
+    fn from_pixels(width: u32, height: u32, pixels: &[u8]) -> Option<Self> {
+        let mut bounds: Option<(u32, u32, u32, u32)> = None;
+        for y in 0..height {
+            for x in 0..width {
+                let alpha = pixels[((y * width + x) * 4 + 3) as usize];
+                if alpha == 0 {
+                    continue;
+                }
+                bounds = Some(match bounds {
+                    Some((left, top, right, bottom)) => (left.min(x), top.min(y), right.max(x + 1), bottom.max(y + 1)),
+                    None => (x, y, x + 1, y + 1),
+                });
+            }
+        }
+        bounds.map(|(left, top, right, bottom)| Self {
+            left,
+            top,
+            right,
+            bottom,
+        })
+    }
+
+    pub(crate) fn contains(&self, x: u32, y: u32) -> bool {
+        x >= self.left && x < self.right && y >= self.top && y < self.bottom
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreparedFrame {
     pub width: u32,
     pub height: u32,
     pub pixels: Vec<u8>,
+    pub hitbox: Option<FrameHitbox>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -251,7 +288,12 @@ fn read_locked_bitmap(bitmap: *mut GpBitmap, width: u32, height: u32) -> Result<
     let result = copy_premultiplied_pixels(&data, width, height);
     let unlock_status = unsafe { GdipBitmapUnlockBits(bitmap, &mut data) };
     ensure_gdiplus_ok(unlock_status, "could not unlock PNG pixels")?;
-    result.map(|pixels| PreparedFrame { width, height, pixels })
+    result.map(|pixels| PreparedFrame {
+        width,
+        height,
+        hitbox: FrameHitbox::from_pixels(width, height, &pixels),
+        pixels,
+    })
 }
 
 fn copy_premultiplied_pixels(data: &BitmapData, width: u32, height: u32) -> Result<Vec<u8>, AssetError> {
@@ -298,7 +340,7 @@ fn ensure_gdiplus_ok(status: Status, operation: &str) -> Result<(), AssetError> 
 
 #[cfg(test)]
 mod tests {
-    use super::{copy_premultiplied_pixels, load_cat_animations, load_manifest, premultiply};
+    use super::{FrameHitbox, copy_premultiplied_pixels, load_cat_animations, load_manifest, premultiply};
     use std::{path::Path, ptr::null_mut};
     use windows::Win32::Graphics::GdiPlus::BitmapData;
 
@@ -407,5 +449,23 @@ mod tests {
         };
 
         assert!(copy_premultiplied_pixels(&data, 1, 1).is_err());
+    }
+
+    #[test]
+    fn builds_a_per_frame_hitbox_from_alpha_pixels() {
+        let pixels = [0, 0, 0, 0, 0, 0, 0, 64, 0, 0, 0, 0, 0, 0, 0, 255];
+        let hitbox = FrameHitbox::from_pixels(2, 2, &pixels).expect("opaque pixels should have a hitbox");
+
+        assert_eq!(
+            hitbox,
+            FrameHitbox {
+                left: 1,
+                top: 0,
+                right: 2,
+                bottom: 2
+            }
+        );
+        assert!(!hitbox.contains(0, 0));
+        assert!(hitbox.contains(1, 1));
     }
 }

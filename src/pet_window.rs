@@ -10,12 +10,13 @@ use windows::{
         UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture},
         UI::WindowsAndMessaging::{
             AppendMenuW, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-            DestroyMenu, DestroyWindow, GWLP_USERDATA, GetCursorPos, GetWindowLongPtrW, GetWindowRect, HWND_TOPMOST,
-            IDC_ARROW, KillTimer, LoadCursorW, MF_STRING, RegisterClassExW, SPI_GETWORKAREA, SW_HIDE,
-            SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE, SetTimer, SetWindowLongPtrW,
-            SetWindowPos, ShowWindow, SystemParametersInfoW, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-            TrackPopupMenuEx, WM_APP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY,
-            WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
+            DestroyMenu, DestroyWindow, GWLP_USERDATA, GetCursorPos, GetWindowLongPtrW, GetWindowRect, HTCLIENT,
+            HTTRANSPARENT, HWND_TOPMOST, IDC_ARROW, KillTimer, LoadCursorW, MF_STRING, RegisterClassExW,
+            SPI_GETWORKAREA, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE, SetTimer,
+            SetWindowLongPtrW, SetWindowPos, ShowWindow, SystemParametersInfoW, TPM_LEFTALIGN, TPM_RETURNCMD,
+            TPM_RIGHTBUTTON, TrackPopupMenuEx, WM_APP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE,
+            WM_NCDESTROY, WM_NCHITTEST, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+            WS_EX_TOOLWINDOW, WS_POPUP,
         },
     },
     core::{Error, PCWSTR, Result, w},
@@ -23,7 +24,7 @@ use windows::{
 
 use crate::{
     animation::{AnimationPlayer, PlaybackState},
-    asset::{CharacterAnimations, PreparedAnimation},
+    asset::{CharacterAnimations, PreparedAnimation, PreparedFrame},
     render::{LayeredRenderer, PixelSurface, SurfacePoint},
     speech_bubble::SpeechBubbleConfig,
     speech_bubble_window::SpeechBubbleController,
@@ -328,6 +329,14 @@ unsafe extern "system" fn pet_window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
             }
             LRESULT(0)
         }
+        WM_NCHITTEST => {
+            if let Some(state) = state_mut(hwnd) {
+                if !hit_test_current_frame(hwnd, state, lparam) {
+                    return LRESULT(HTTRANSPARENT as isize);
+                }
+            }
+            LRESULT(HTCLIENT as isize)
+        }
         WM_LBUTTONDOWN => {
             if let Some(state) = state_mut(hwnd) {
                 let _ = begin_drag(hwnd, state);
@@ -431,6 +440,40 @@ fn begin_drag(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
         let _ = SetCapture(hwnd);
     }
     Ok(())
+}
+
+fn hit_test_current_frame(hwnd: HWND, state: &PetWindowState, lparam: LPARAM) -> bool {
+    let Some((_, frame_id)) = state.last_frame else {
+        return true;
+    };
+    let Some(frame) = active_frame(state, frame_id) else {
+        return false;
+    };
+    let mut window = RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut window) }.is_err() {
+        return false;
+    }
+    let screen_x = (lparam.0 as u16) as i16 as i32;
+    let screen_y = ((lparam.0 >> 16) as u16) as i16 as i32;
+    let x = screen_x - window.left;
+    let y = screen_y - window.top;
+    if x < 0 || y < 0 || x >= frame.width as i32 || y >= frame.height as i32 {
+        return false;
+    }
+    let x = x as u32;
+    let y = y as u32;
+    if frame.hitbox.as_ref().is_some_and(|hitbox| !hitbox.contains(x, y)) {
+        return false;
+    }
+    frame.pixels[((y * frame.width + x) * 4 + 3) as usize] >= 16
+}
+
+fn active_frame(state: &PetWindowState, frame_id: u32) -> Option<&PreparedFrame> {
+    match state.active_clip {
+        ActiveClip::Idle => state.idle.frames.get(frame_id as usize),
+        ActiveClip::Walk => state.walk.frames.get(frame_id as usize),
+        ActiveClip::Jump => state.jump.frames.get(frame_id as usize),
+    }
 }
 
 fn move_drag(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {

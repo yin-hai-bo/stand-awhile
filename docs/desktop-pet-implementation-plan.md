@@ -266,7 +266,7 @@ Acceptance checklist:
 - ✅ 原地播放 `walk` 动画且不改变窗口位置；
 - ✅ dog 角色选择与通用角色目录；角色通过配置文件中的 `character` 字段选择，默认值为 `cat`；
 - ✅ 可配置气泡文本；消息支持独立显示时长，消息之间支持配置隐藏间隔；
-- alpha-aware hit testing and per-frame hitboxes;
+- ✅ 基于 alpha 的命中测试与逐帧 hitbox；透明像素不会触发 Pet 交互；
 - saved position and Pet settings;
 - richer context menu and interaction states;
 - Direct2D/DirectComposition only after profiling demonstrates a real need;
