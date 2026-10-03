@@ -2,7 +2,7 @@
 
 ## Outcome
 
-Add a cat desktop pet to Stand Awhile. The Pet is an independent transparent
+Add a desktop Pet to Stand Awhile. The Pet is an independent transparent
 Win32 window managed by the existing main window. When the timer reaches zero,
 the Pet appears, plays one `jump` animation, and remains idle until clicked.
 Clicking acknowledges the reminder, hides the Pet, and starts the next timer
@@ -65,15 +65,15 @@ Tests:
 
 Review boundary: only pure animation types and tests. No window or asset code.
 
-## STEP 2 — Load and prepare the cat assets ✅ 已完成
+## STEP 2 — Load and prepare the character assets ✅ 已完成
 
-Goal: turn the checked-in cat asset manifest and PNG files into renderable
+Goal: turn the checked-in character manifest and PNG files into renderable
 frames without reading files during animation ticks.
 
 Likely changes:
 
 - Add an `asset` module.
-- Parse `assets/pets/cat-dog/manifest.json` for the cat character.
+- Parse `assets/pets/cat-dog/manifest.json` for all declared characters.
 - Resolve numbered frame paths deterministically; do not rely on directory
   enumeration order.
 - Decode PNG frames with the existing Windows graphics stack.
@@ -124,7 +124,7 @@ Likely changes:
   `WS_EX_NOACTIVATE`.
 - Use `HWND_TOPMOST` without activating the window.
 - Place it at the bottom-right of the primary work area with a margin.
-- Show one static cat frame through the renderer.
+- Show one static frame from the selected character through the renderer.
 - Make shutdown and `WM_NCDESTROY` ownership explicit.
 
 Tests and checks:
@@ -138,7 +138,7 @@ Review boundary: window lifetime, styles, placement, and renderer hookup.
 
 ## STEP 5 — Connect animation playback to the Pet window ✅ 已完成
 
-Goal: display the cat `idle` animation and one-shot `jump` without blocking the
+Goal: display the selected character's `idle` animation and one-shot `jump` without blocking the
 message loop.
 
 Likely changes:
@@ -245,14 +245,14 @@ Likely changes:
 - Document the Pet lifecycle and asset contract.
 - Add or update Windows-only smoke-test instructions.
 - Run `cargo fmt`, `cargo test`, and a release build check as appropriate.
-- Record known deferred work: walk/autonomous movement, dog selection,
+- Record known deferred work: walk/autonomous movement,
   position persistence, alpha hit testing, settings, and Direct2D/
   DirectComposition evaluation.
 
 Acceptance checklist:
 
 - application starts with Pet visible while the timer has not started;
-- timer completion shows the cat and plays `jump`;
+- timer completion shows the selected character and plays `jump`;
 - Pet can be dragged and clicked;
 - click hides Pet and starts the next interval;
 - tray-hidden mode still works;
@@ -263,7 +263,7 @@ Acceptance checklist:
 ## Deferred work after the MVP
 
 - ✅ 原地播放 `walk` 动画且不改变窗口位置；
-- dog character selection and a general character catalog;
+- ✅ dog 角色选择与通用角色目录；角色通过配置文件中的 `character` 字段选择，默认值为 `cat`；
 - configurable speech bubbles that cycle through messages with per-message
   display durations and configurable gaps when the bubble is hidden;
 - alpha-aware hit testing and per-frame hitboxes;

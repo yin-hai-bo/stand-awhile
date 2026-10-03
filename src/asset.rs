@@ -56,10 +56,25 @@ pub struct PreparedAnimation {
     pub frames: Vec<PreparedFrame>,
 }
 
-pub struct CatAnimations {
+#[derive(Clone)]
+pub struct CharacterAnimations {
     pub idle: PreparedAnimation,
     pub walk: PreparedAnimation,
     pub jump: PreparedAnimation,
+}
+
+pub struct CharacterCatalog {
+    characters: BTreeMap<String, CharacterAnimations>,
+}
+
+impl CharacterCatalog {
+    pub fn get(&self, character_id: &str) -> Option<&CharacterAnimations> {
+        self.characters.get(character_id)
+    }
+
+    pub fn character_ids(&self) -> impl Iterator<Item = &str> {
+        self.characters.keys().map(String::as_str)
+    }
 }
 
 #[derive(Deserialize)]
@@ -83,18 +98,41 @@ struct AnimationManifest {
     loop_mode: bool,
 }
 
-pub fn load_cat_animations(_gdi_plus: &GdiPlus, asset_root: &Path) -> Result<CatAnimations, AssetError> {
+pub fn load_character_catalog(_gdi_plus: &GdiPlus, asset_root: &Path) -> Result<CharacterCatalog, AssetError> {
     let manifest = load_manifest(&asset_root.join("manifest.json"))?;
-    let cat = manifest
+    let characters = manifest
         .characters
-        .get("cat")
-        .ok_or_else(|| AssetError::InvalidManifest("missing cat character".to_owned()))?;
+        .iter()
+        .map(|(id, character)| {
+            load_character_animations(asset_root, character, manifest.default_frame_duration_ms)
+                .map(|animations| (id.clone(), animations))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
 
-    let idle = load_animation(asset_root, cat, "idle", manifest.default_frame_duration_ms)?;
-    let walk = load_animation(asset_root, cat, "walk", manifest.default_frame_duration_ms)?;
-    let jump = load_animation(asset_root, cat, "jump", manifest.default_frame_duration_ms)?;
+    if characters.is_empty() {
+        return Err(AssetError::InvalidManifest("manifest has no characters".to_owned()));
+    }
 
-    Ok(CatAnimations { idle, walk, jump })
+    Ok(CharacterCatalog { characters })
+}
+
+pub fn load_cat_animations(_gdi_plus: &GdiPlus, asset_root: &Path) -> Result<CharacterAnimations, AssetError> {
+    load_character_catalog(_gdi_plus, asset_root)?
+        .characters
+        .remove("cat")
+        .ok_or_else(|| AssetError::InvalidManifest("missing cat character".to_owned()))
+}
+
+fn load_character_animations(
+    asset_root: &Path,
+    character: &CharacterManifest,
+    default_frame_duration_ms: u64,
+) -> Result<CharacterAnimations, AssetError> {
+    let idle = load_animation(asset_root, character, "idle", default_frame_duration_ms)?;
+    let walk = load_animation(asset_root, character, "walk", default_frame_duration_ms)?;
+    let jump = load_animation(asset_root, character, "jump", default_frame_duration_ms)?;
+
+    Ok(CharacterAnimations { idle, walk, jump })
 }
 
 fn load_manifest(path: &Path) -> Result<Manifest, AssetError> {
@@ -315,6 +353,23 @@ mod tests {
             (assets.idle.frames[0].width * assets.idle.frames[0].height * 4) as usize
         );
         assert!(assets.idle.frames[0].pixels.chunks_exact(4).any(|pixel| pixel[3] != 0));
+    }
+
+    #[test]
+    fn loads_every_character_into_the_catalog() {
+        let manifest = load_manifest(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("assets/pets/cat-dog/manifest.json")
+                .as_path(),
+        )
+        .expect("checked-in character catalog should load");
+
+        assert_eq!(
+            manifest.characters.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["cat", "dog"]
+        );
+        assert_eq!(manifest.characters["dog"].animations["idle"].frame_count, 10);
+        assert_eq!(manifest.characters["dog"].animations["jump"].frame_count, 8);
     }
 
     #[test]

@@ -17,10 +17,13 @@
 
 ## 资源契约
 
-项目中的 Cat 资源由
-`assets/pets/cat-dog/manifest.json` 描述。当前加载器要求存在 `cat` 角色，
-以及它的 `idle`、`walk` 和 `jump` 动画。每个动画至少需要一帧，帧文件按照
-manifest 中的文件名模式，以数字顺序解析。
+项目中的角色资源由 `assets/pets/cat-dog/manifest.json` 描述。加载器会为
+manifest 中的每个角色建立目录；当前每个角色都要求存在 `idle`、`walk` 和
+`jump` 动画。每个动画至少需要一帧，帧文件按照 manifest 中的文件名模式，
+以数字顺序解析。
+
+角色通过配置文件中的 `character` 字段选择，默认值为 `cat`。例如将其设置
+为 `dog` 后，下一次启动程序会使用 Dog 资源；未知角色会回退到 `cat`。
 
 PNG 的宽高按原始像素尺寸处理。Pet 窗口和分层窗口使用的 BGRA 表面直接使用
 这些尺寸；程序不会再次对已经解码的 PNG 像素应用 DPI 缩放。
@@ -50,9 +53,10 @@ cargo build --release
    “退出”。
 8. 启用“关闭时缩小到系统托盘图标”，关闭主窗口，确认托盘图标仍然存在，
    并且可以重新打开或退出程序。
+9. 在配置文件中将 `character` 设置为 `dog`，重新启动程序，确认 Pet 使用
+   Dog 的 `idle`、`walk` 和 `jump` 动画。
 
 ## 延后工作
 
-Dog 角色选择、位置保存、基于 alpha 的命中测试、更多设置，以及
-Direct2D/DirectComposition 仍不属于 MVP 范围。Pet 的 `walk` 永远是原地播放，
-不会自动改变窗口位置。
+位置保存、基于 alpha 的命中测试、更多设置，以及 Direct2D/DirectComposition
+仍不属于 MVP 范围。Pet 的 `walk` 永远是原地播放，不会自动改变窗口位置。

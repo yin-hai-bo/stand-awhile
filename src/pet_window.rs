@@ -23,7 +23,7 @@ use windows::{
 
 use crate::{
     animation::{AnimationPlayer, PlaybackState},
-    asset::{CatAnimations, PreparedAnimation},
+    asset::{CharacterAnimations, PreparedAnimation},
     render::{LayeredRenderer, PixelSurface, SurfacePoint},
 };
 
@@ -86,7 +86,7 @@ pub struct PetWindow {
 }
 
 impl PetWindow {
-    pub fn create(instance: HINSTANCE, owner: HWND, animations: CatAnimations) -> Result<Self> {
+    pub fn create(instance: HINSTANCE, owner: HWND, animations: CharacterAnimations) -> Result<Self> {
         register_class(instance)?;
 
         let frame = &animations.idle.frames[0];

@@ -14,12 +14,12 @@ Designed to be unobtrusive and minimal, it helps reduce the health risks of prol
 ## ✨ Features
 
 - ⏱ **Smart Timer**: Default 20-minute interval (fully configurable)
-- 🔕 **Gentle Notifications**: Flash the window when visible, or show a Windows toast notification when minimized to tray
+- 🐾 **Desktop Pet Reminders**: Show a transparent animated Pet when the timer completes
 - 🪶 **Lightweight**: Runs quietly in the system tray with minimal memory usage
 - 🛠 **Customizable**:
   - Adjust reminder intervals
-  - Customize reminder messages
-  - Skip or snooze reminders
+  - Choose the Pet character (`cat` or `dog`) in the configuration file
+  - Choose the application language and theme
 - 🖥 **Native Experience**: Pure Windows application, no browser dependencies
 
 ---
@@ -38,7 +38,13 @@ Designed to be unobtrusive and minimal, it helps reduce the health risks of prol
 3. Extract and run `StandAwhile.exe`
 4. The app will minimize to the system tray
 
-Note: Windows toast notifications can be suppressed by system settings such as Do Not Disturb / Focus Assist.
+The Pet is the application's reminder channel. It can be dragged, clicked to
+acknowledge a reminder, or controlled through its context menu. The application
+does not use Windows toast notifications or tray balloon reminders.
+
+The configuration file is available from the application's **Open config folder**
+link or tray menu. Set `"character": "dog"` to use the Dog Pet; the default is
+`"cat"`.
 
 ### Build from Source
 

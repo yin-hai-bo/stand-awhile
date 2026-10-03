@@ -23,6 +23,7 @@ const DEFAULT_PERIOD_SECONDS: u32 = 20 * 60;
 const DEFAULT_TRAY_WHEN_CLOSE: bool = false;
 const DEFAULT_LANGUAGE: &str = "auto";
 const DEFAULT_THEME: &str = "system";
+const DEFAULT_CHARACTER: &str = "cat";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
@@ -30,6 +31,7 @@ pub struct Config {
     pub tray_when_close: bool,
     pub language: String,
     pub theme: String,
+    pub character: String,
 }
 
 impl Default for Config {
@@ -39,6 +41,7 @@ impl Default for Config {
             tray_when_close: DEFAULT_TRAY_WHEN_CLOSE,
             language: DEFAULT_LANGUAGE.to_owned(),
             theme: DEFAULT_THEME.to_owned(),
+            character: DEFAULT_CHARACTER.to_owned(),
         }
     }
 }
@@ -49,6 +52,7 @@ struct ConfigFile {
     tray_when_close: Option<bool>,
     language: Option<String>,
     theme: Option<String>,
+    character: Option<String>,
 }
 
 impl Config {
@@ -63,6 +67,7 @@ impl Config {
             tray_when_close: file.tray_when_close.unwrap_or(DEFAULT_TRAY_WHEN_CLOSE),
             language: file.language.unwrap_or_else(|| DEFAULT_LANGUAGE.to_owned()),
             theme: file.theme.unwrap_or_else(|| DEFAULT_THEME.to_owned()),
+            character: file.character.unwrap_or_else(|| DEFAULT_CHARACTER.to_owned()),
         })
     }
 
@@ -81,6 +86,7 @@ impl Config {
             tray_when_close: Some(self.tray_when_close),
             language: Some(self.language.clone()),
             theme: Some(self.theme.clone()),
+            character: Some(self.character.clone()),
         };
         let contents = serde_json::to_string_pretty(&file)
             .map(|json| format!("{json}\n"))
@@ -205,5 +211,6 @@ mod tests {
         assert!(!config.tray_when_close);
         assert_eq!(config.language, "auto");
         assert_eq!(config.theme, "system");
+        assert_eq!(config.character, "cat");
     }
 }

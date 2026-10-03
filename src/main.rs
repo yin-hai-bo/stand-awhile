@@ -14,7 +14,7 @@ mod tray_icon;
 mod ui;
 mod window_proc;
 
-use crate::asset::load_cat_animations;
+use crate::asset::load_character_catalog;
 use crate::config::{Config, open_config_directory, set_tray_when_close, show_config_open_error};
 use crate::pet_window::PetWindow;
 use windows::Win32::{
@@ -125,14 +125,19 @@ fn run() -> Result<()> {
     }?;
 
     let gdi_plus = GdiPlus::new()?;
-    let assets = load_cat_animations(
+    let catalog = load_character_catalog(
         &gdi_plus,
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("assets/pets/cat-dog")
             .as_path(),
     )
     .map_err(|_| Error::from_win32())?;
-    let pet_window = PetWindow::create(instance, hwnd, assets)?;
+    let animations = catalog
+        .get(&config.character)
+        .or_else(|| catalog.get("cat"))
+        .ok_or_else(Error::from_win32)?
+        .clone();
+    let pet_window = PetWindow::create(instance, hwnd, animations)?;
     create_control_buttons(hwnd, instance)?;
     let config_link = HyperLinkText::create(
         hwnd,
