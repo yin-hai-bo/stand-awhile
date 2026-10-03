@@ -90,6 +90,7 @@ impl AnimationPlayer {
         }
     }
 
+    #[allow(unused)]
     pub fn state(&self) -> PlaybackState {
         self.state
     }
@@ -101,6 +102,7 @@ impl AnimationPlayer {
         self.frame_index = 0;
     }
 
+    #[allow(unused)]
     pub fn pause(&mut self, now: Instant) {
         if self.state != PlaybackState::Playing {
             return;
@@ -112,6 +114,7 @@ impl AnimationPlayer {
         self.update_frame_index();
     }
 
+    #[allow(unused)]
     pub fn resume(&mut self, now: Instant) {
         if self.state != PlaybackState::Paused {
             return;
@@ -121,6 +124,7 @@ impl AnimationPlayer {
         self.state = PlaybackState::Playing;
     }
 
+    #[allow(unused)]
     pub fn reset(&mut self) {
         self.state = PlaybackState::Stopped;
         self.started_at = None;

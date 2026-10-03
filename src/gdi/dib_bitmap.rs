@@ -11,7 +11,7 @@ use windows::{
 use crate::gdi::hdc_owner::HdcOwner;
 
 pub(crate) struct DibBitmap {
-    bitmap: Owned<HBITMAP>,
+    _bitmap: Owned<HBITMAP>,
     hdc_owner: Owned<HdcOwner>,
     old_bitmap: HGDIOBJ,
     bits: *mut u8,
@@ -58,7 +58,7 @@ impl DibBitmap {
         }
 
         Ok(Self {
-            bitmap,
+            _bitmap: bitmap,
             hdc_owner,
             old_bitmap,
             bits: bits.cast(),
