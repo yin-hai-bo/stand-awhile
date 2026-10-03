@@ -139,7 +139,13 @@ fn run() -> Result<()> {
         .or_else(|| catalog.get("cat"))
         .ok_or_else(Error::from_win32)?
         .clone();
-    let pet_window = PetWindow::create(instance, hwnd, animations, config.speech_bubble.clone())?;
+    let pet_window = PetWindow::create(
+        instance,
+        hwnd,
+        animations,
+        config.speech_bubble.clone(),
+        config.pet_position.clone(),
+    )?;
     create_control_buttons(hwnd, instance)?;
     let config_link = HyperLinkText::create(
         hwnd,

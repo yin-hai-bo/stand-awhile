@@ -37,6 +37,16 @@ pub struct Config {
     pub theme: String,
     pub character: String,
     pub speech_bubble: SpeechBubbleConfig,
+    pub pet_position: Option<PetPosition>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PetPosition {
+    pub monitor: String,
+    pub relative_x: i32,
+    pub relative_y: i32,
+    pub screen_x: i32,
+    pub screen_y: i32,
 }
 
 impl Default for Config {
@@ -48,6 +58,7 @@ impl Default for Config {
             theme: DEFAULT_THEME.to_owned(),
             character: DEFAULT_CHARACTER.to_owned(),
             speech_bubble: default_speech_bubble(),
+            pet_position: None,
         }
     }
 }
@@ -60,6 +71,7 @@ struct ConfigFile {
     theme: Option<String>,
     character: Option<String>,
     speech_bubble: Option<SpeechBubbleFile>,
+    pet_position: Option<PetPosition>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -91,6 +103,7 @@ impl Config {
                 .speech_bubble
                 .map(speech_bubble_from_file)
                 .unwrap_or_else(default_speech_bubble),
+            pet_position: file.pet_position,
         })
     }
 
@@ -111,12 +124,19 @@ impl Config {
             theme: Some(self.theme.clone()),
             character: Some(self.character.clone()),
             speech_bubble: Some(speech_bubble_to_file(&self.speech_bubble)),
+            pet_position: self.pet_position.clone(),
         };
         let contents = serde_json::to_string_pretty(&file)
             .map(|json| format!("{json}\n"))
             .map_err(|error| Error::new(windows::core::HRESULT(0x8000_4005u32 as i32), error.to_string()))?;
         fs::write(path, contents).map_err(io_error_to_win_error)
     }
+}
+
+pub fn save_pet_position(position: PetPosition) -> Result<()> {
+    let mut config = Config::load()?;
+    config.pet_position = Some(position);
+    config.save()
 }
 
 fn default_speech_bubble() -> SpeechBubbleConfig {
@@ -275,5 +295,6 @@ mod tests {
         assert_eq!(config.theme, "system");
         assert_eq!(config.character, "cat");
         assert_eq!(config.speech_bubble.messages.len(), 1);
+        assert!(config.pet_position.is_none());
     }
 }

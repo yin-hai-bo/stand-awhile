@@ -6,7 +6,9 @@ use std::{
 use windows::{
     Win32::{
         Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
-        Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, MonitorFromWindow},
+        Graphics::Gdi::{
+            GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MONITORINFOEXW, MonitorFromPoint, MonitorFromWindow,
+        },
         UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture},
         UI::WindowsAndMessaging::{
             AppendMenuW, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
@@ -25,6 +27,7 @@ use windows::{
 use crate::{
     animation::{AnimationPlayer, PlaybackState},
     asset::{CharacterAnimations, PreparedAnimation, PreparedFrame},
+    config::{PetPosition, save_pet_position},
     render::{LayeredRenderer, PixelSurface, SurfacePoint},
     speech_bubble::SpeechBubbleConfig,
     speech_bubble_window::SpeechBubbleController,
@@ -96,13 +99,17 @@ impl PetWindow {
         owner: HWND,
         animations: CharacterAnimations,
         speech_bubble_config: SpeechBubbleConfig,
+        saved_position: Option<PetPosition>,
     ) -> Result<Self> {
         register_class(instance)?;
 
         let frame = &animations.idle.frames[0];
         let width = i32::try_from(frame.width).map_err(|_| Error::from_win32())?;
         let height = i32::try_from(frame.height).map_err(|_| Error::from_win32())?;
-        let position = pet_position(width, height)?;
+        let position = saved_position
+            .map(|saved| restore_position(&saved, (width, height)))
+            .transpose()?
+            .unwrap_or(pet_position(width, height)?);
         let mut surface = PixelSurface::new(frame.width, frame.height).map_err(|_| Error::from_win32())?;
         surface
             .draw_frame(frame, SurfacePoint { x: 0, y: 0 })
@@ -298,6 +305,64 @@ fn primary_work_area() -> Result<RECT> {
         )?
     };
     Ok(work_area)
+}
+
+fn restore_position(saved: &PetPosition, size: (i32, i32)) -> Result<(i32, i32)> {
+    let monitor = unsafe {
+        MonitorFromPoint(
+            POINT {
+                x: saved.screen_x,
+                y: saved.screen_y,
+            },
+            MONITOR_DEFAULTTONEAREST,
+        )
+    };
+    let info = monitor_info_ex(monitor)?;
+    let monitor_name = monitor_device_name(&info);
+    let candidate = if monitor_name == saved.monitor {
+        (
+            info.monitorInfo.rcWork.left + saved.relative_x,
+            info.monitorInfo.rcWork.top + saved.relative_y,
+        )
+    } else {
+        (saved.screen_x, saved.screen_y)
+    };
+    Ok(clamp_position(candidate, size, info.monitorInfo.rcWork))
+}
+
+fn persistent_position(hwnd: HWND, position: (i32, i32)) -> Result<PetPosition> {
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    let info = monitor_info_ex(monitor)?;
+    Ok(PetPosition {
+        monitor: monitor_device_name(&info),
+        relative_x: position.0 - info.monitorInfo.rcWork.left,
+        relative_y: position.1 - info.monitorInfo.rcWork.top,
+        screen_x: position.0,
+        screen_y: position.1,
+    })
+}
+
+fn monitor_info_ex(monitor: windows::Win32::Graphics::Gdi::HMONITOR) -> Result<MONITORINFOEXW> {
+    let mut info = MONITORINFOEXW {
+        monitorInfo: MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFOEXW>() as u32,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    if !unsafe { GetMonitorInfoW(monitor, (&mut info as *mut MONITORINFOEXW).cast()) }.as_bool() {
+        return Err(Error::from_win32());
+    }
+    Ok(info)
+}
+
+fn monitor_device_name(info: &MONITORINFOEXW) -> String {
+    let length = info
+        .szDevice
+        .iter()
+        .position(|character| *character == 0)
+        .unwrap_or(info.szDevice.len());
+    String::from_utf16_lossy(&info.szDevice[..length])
 }
 
 fn attach_state(hwnd: HWND, state: PetWindowState) {
@@ -504,6 +569,11 @@ fn end_drag(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
     if !drag.moved {
         let _ = begin_hide_animation(hwnd, state);
         post_pet_command(state.owner, PET_COMMAND_ACKNOWLEDGE);
+    }
+    if drag.moved {
+        if let Ok(position) = persistent_position(hwnd, state.position) {
+            let _ = save_pet_position(position);
+        }
     }
     Ok(())
 }
