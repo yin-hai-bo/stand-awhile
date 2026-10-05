@@ -2,6 +2,7 @@ pub mod button;
 pub mod check_box;
 pub mod component;
 mod countdown;
+pub mod font;
 pub mod gdi_plus;
 pub mod hyper_link_text;
 pub mod theme;
