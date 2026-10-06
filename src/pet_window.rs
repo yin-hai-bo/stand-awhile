@@ -9,6 +9,7 @@ use windows::{
         Graphics::Gdi::{
             GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MONITORINFOEXW, MonitorFromPoint, MonitorFromWindow,
         },
+        UI::HiDpi::GetDpiForWindow,
         UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture},
         UI::WindowsAndMessaging::{
             AppendMenuW, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
@@ -16,9 +17,9 @@ use windows::{
             HTTRANSPARENT, HWND_TOPMOST, IDC_ARROW, KillTimer, LoadCursorW, MF_SEPARATOR, MF_STRING, RegisterClassExW,
             SPI_GETWORKAREA, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE, SetTimer,
             SetWindowLongPtrW, SetWindowPos, ShowWindow, SystemParametersInfoW, TPM_LEFTALIGN, TPM_RETURNCMD,
-            TPM_RIGHTBUTTON, TrackPopupMenuEx, WM_APP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE,
-            WM_NCDESTROY, WM_NCHITTEST, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-            WS_EX_TOOLWINDOW, WS_POPUP,
+            TPM_RIGHTBUTTON, TrackPopupMenuEx, WM_APP, WM_DPICHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+            WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED,
+            WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
         },
     },
     core::{Error, PCWSTR, Result, w},
@@ -67,6 +68,7 @@ enum ActiveClip {
 struct PetWindowState {
     renderer: LayeredRenderer,
     surface: PixelSurface,
+    dpi: u32,
     position: (i32, i32),
     idle: PreparedAnimation,
     walk: PreparedAnimation,
@@ -121,10 +123,6 @@ impl PetWindow {
             .map(|saved| restore_position(&saved, (width, height)))
             .transpose()?
             .unwrap_or(pet_position(width, height)?);
-        let mut surface = PixelSurface::new(frame.width, frame.height).map_err(|_| Error::from_win32())?;
-        surface
-            .draw_frame(frame, SurfacePoint { x: 0, y: 0 })
-            .map_err(|_| Error::from_win32())?;
         let hwnd = unsafe {
             CreateWindowExW(
                 WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE,
@@ -141,6 +139,15 @@ impl PetWindow {
                 None,
             )
         }?;
+
+        let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
+        let mut surface = pet_surface(frame, dpi)?;
+        surface.draw_scaled_frame(frame).map_err(|_| Error::from_win32())?;
+        let position = clamp_position(
+            position,
+            (surface.width() as i32, surface.height() as i32),
+            monitor_work_area(hwnd)?,
+        );
 
         let renderer = match LayeredRenderer::new(hwnd) {
             Ok(renderer) => renderer,
@@ -167,6 +174,7 @@ impl PetWindow {
             PetWindowState {
                 renderer,
                 surface,
+                dpi,
                 position,
                 idle: animations.idle,
                 walk: animations.walk,
@@ -251,10 +259,7 @@ impl PetWindow {
 
     pub fn set_animations(&self, animations: CharacterAnimations) -> Result<()> {
         let state = state_mut(self.hwnd).ok_or_else(Error::from_win32)?;
-        let (width, height) = {
-            let frame = &animations.idle.frames[0];
-            (frame.width, frame.height)
-        };
+        let surface = pet_surface(&animations.idle.frames[0], state.dpi)?;
         state.idle = animations.idle;
         state.walk = animations.walk;
         state.jump = animations.jump;
@@ -262,7 +267,7 @@ impl PetWindow {
         state.player = AnimationPlayer::new(state.idle.clip.clone());
         state.player.play(Instant::now());
         state.last_frame = None;
-        state.surface = PixelSurface::new(width, height).map_err(|_| Error::from_win32())?;
+        state.surface = surface;
         let position = state.position;
         set_position(self.hwnd, state, position)?;
         update_frame(state)
@@ -439,6 +444,13 @@ unsafe extern "system" fn pet_window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
             }
             LRESULT(0)
         }
+        WM_DPICHANGED => {
+            if let Some(state) = state_mut(hwnd) {
+                let rect = unsafe { &*(lparam.0 as *const RECT) };
+                let _ = apply_pet_dpi(state, (wparam.0 & 0xffff) as u32, (rect.left, rect.top));
+            }
+            LRESULT(0)
+        }
         WM_NCHITTEST => {
             if let Some(state) = state_mut(hwnd) {
                 if !hit_test_current_frame(hwnd, state, lparam) {
@@ -553,11 +565,8 @@ fn begin_drag(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
 }
 
 fn hit_test_current_frame(hwnd: HWND, state: &PetWindowState, lparam: LPARAM) -> bool {
-    let Some((_, frame_id)) = state.last_frame else {
+    let Some(_) = state.last_frame else {
         return true;
-    };
-    let Some(frame) = active_frame(state, frame_id) else {
-        return false;
     };
     let mut window = RECT::default();
     if unsafe { GetWindowRect(hwnd, &mut window) }.is_err() {
@@ -567,23 +576,10 @@ fn hit_test_current_frame(hwnd: HWND, state: &PetWindowState, lparam: LPARAM) ->
     let screen_y = ((lparam.0 >> 16) as u16) as i16 as i32;
     let x = screen_x - window.left;
     let y = screen_y - window.top;
-    if x < 0 || y < 0 || x >= frame.width as i32 || y >= frame.height as i32 {
+    if x < 0 || y < 0 || x >= state.surface.width() as i32 || y >= state.surface.height() as i32 {
         return false;
     }
-    let x = x as u32;
-    let y = y as u32;
-    if frame.hitbox.as_ref().is_some_and(|hitbox| !hitbox.contains(x, y)) {
-        return false;
-    }
-    frame.pixels[((y * frame.width + x) * 4 + 3) as usize] >= 16
-}
-
-fn active_frame(state: &PetWindowState, frame_id: u32) -> Option<&PreparedFrame> {
-    match state.active_clip {
-        ActiveClip::Idle => state.idle.frames.get(frame_id as usize),
-        ActiveClip::Walk => state.walk.frames.get(frame_id as usize),
-        ActiveClip::Jump => state.jump.frames.get(frame_id as usize),
-    }
+    state.surface.pixels()[((y as u32 * state.surface.width() + x as u32) * 4 + 3) as usize] >= 16
 }
 
 fn move_drag(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
@@ -728,13 +724,14 @@ fn set_position(hwnd: HWND, state: &mut PetWindowState, position: (i32, i32)) ->
     state.renderer.submit(
         &state.surface,
         SurfacePoint {
-            x: position.0,
-            y: position.1,
+            x: state.position.0,
+            y: state.position.1,
         },
     )?;
-    state
-        .speech_bubble
-        .set_position(position, (state.surface.width() as i32, state.surface.height() as i32))?;
+    state.speech_bubble.set_position(
+        state.position,
+        (state.surface.width() as i32, state.surface.height() as i32),
+    )?;
     Ok(())
 }
 
@@ -816,7 +813,7 @@ fn update_frame(state: &mut PetWindowState) -> Result<()> {
     state.surface.clear();
     state
         .surface
-        .draw_frame(frame, SurfacePoint { x: 0, y: 0 })
+        .draw_scaled_frame(frame)
         .map_err(|_| Error::from_win32())?;
     state.renderer.submit(
         &state.surface,
@@ -831,6 +828,37 @@ fn update_frame(state: &mut PetWindowState) -> Result<()> {
 
 fn should_return_to_idle(active_clip: ActiveClip, playback_state: PlaybackState) -> bool {
     active_clip == ActiveClip::Jump && playback_state == PlaybackState::Finished
+}
+
+fn pet_surface(frame: &PreparedFrame, dpi: u32) -> Result<PixelSurface> {
+    let scale = |value: u32| -> Result<u32> {
+        let scaled = (value as u64 * dpi.max(96) as u64 + 48) / 96;
+        if scaled == 0 || scaled > i32::MAX as u64 {
+            return Err(Error::from_win32());
+        }
+        Ok(scaled as u32)
+    };
+    PixelSurface::new(scale(frame.width)?, scale(frame.height)?).map_err(|_| Error::from_win32())
+}
+
+fn apply_pet_dpi(state: &mut PetWindowState, dpi: u32, position: (i32, i32)) -> Result<()> {
+    let surface = pet_surface(&state.idle.frames[0], dpi)?;
+    state.dpi = dpi.max(96);
+    state.surface = surface;
+    state.position = position;
+    state.last_frame = None;
+    // Rebase an active drag so the next mouse message does not undo the suggested position.
+    if let Some(drag) = state.drag.as_mut() {
+        unsafe { GetCursorPos(&mut drag.pointer_start)? };
+        drag.window_start = POINT {
+            x: position.0,
+            y: position.1,
+        };
+    }
+    update_frame(state)?;
+    state
+        .speech_bubble
+        .set_position(position, (state.surface.width() as i32, state.surface.height() as i32))
 }
 
 #[cfg(test)]
@@ -891,6 +919,114 @@ mod tests {
         assert!(should_return_to_idle(ActiveClip::Jump, PlaybackState::Finished));
         assert!(!should_return_to_idle(ActiveClip::Jump, PlaybackState::Playing));
         assert!(!should_return_to_idle(ActiveClip::Idle, PlaybackState::Finished));
+    }
+
+    #[test]
+    fn dpi_changes_resize_rendering_and_hit_testing_without_accumulating_scale() {
+        use super::*;
+        use crate::animation::{AnimationClip, Frame, LoopMode};
+        use windows::Win32::{System::LibraryLoader::GetModuleHandleW, UI::WindowsAndMessaging::SendMessageW};
+        unsafe {
+            let instance: HINSTANCE = GetModuleHandleW(None).unwrap().into();
+            register_class(instance).unwrap();
+            let hwnd = CreateWindowExW(
+                WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                PET_WINDOW_CLASS,
+                w!(""),
+                WS_POPUP,
+                100,
+                100,
+                3,
+                2,
+                None,
+                None,
+                Some(instance),
+                None,
+            )
+            .unwrap();
+            let pet = PetWindow { hwnd };
+            let pixels = [0, 0, 0, 0, 10, 20, 30, 255, 10, 20, 30, 255].repeat(2);
+            let frame = PreparedFrame {
+                width: 3,
+                height: 2,
+                pixels,
+                hitbox: None,
+            };
+            let clip = AnimationClip::new(vec![Frame { id: 0 }], Duration::from_millis(120), LoopMode::Loop).unwrap();
+            let animation = PreparedAnimation {
+                clip: clip.clone(),
+                frames: vec![frame.clone()],
+            };
+            attach_state(
+                hwnd,
+                PetWindowState {
+                    renderer: LayeredRenderer::new(hwnd).unwrap(),
+                    surface: pet_surface(&frame, 96).unwrap(),
+                    dpi: 96,
+                    position: (100, 100),
+                    idle: animation.clone(),
+                    walk: animation.clone(),
+                    jump: animation,
+                    player: AnimationPlayer::new(clip),
+                    active_clip: ActiveClip::Idle,
+                    last_frame: None,
+                    owner: HWND::default(),
+                    drag: None,
+                    hide_animation: None,
+                    next_walk_at: Instant::now() + WALK_START_DELAY,
+                    speech_bubble: SpeechBubbleController::create(
+                        instance,
+                        hwnd,
+                        crate::config::Config::default().speech_bubble,
+                    )
+                    .unwrap(),
+                    start_menu_text: String::new(),
+                    show_main_menu_text: String::new(),
+                    settings_menu_text: String::new(),
+                    about_menu_text: String::new(),
+                    exit_menu_text: String::new(),
+                },
+            );
+            for (dpi, width, height) in [
+                (96, 3, 2),
+                (120, 4, 3),
+                (144, 5, 3),
+                (192, 6, 4),
+                (144, 5, 3),
+                (96, 3, 2),
+            ] {
+                let suggested = RECT {
+                    left: 100,
+                    top: 100,
+                    right: 100 + width,
+                    bottom: 100 + height,
+                };
+                SendMessageW(
+                    hwnd,
+                    WM_DPICHANGED,
+                    Some(WPARAM(dpi | (dpi << 16))),
+                    Some(LPARAM((&suggested as *const RECT) as isize)),
+                );
+                let state = state_mut(hwnd).unwrap();
+                assert_eq!(state.dpi, dpi as u32);
+                assert_eq!(
+                    (state.surface.width(), state.surface.height()),
+                    (width as u32, height as u32)
+                );
+                let mut actual = RECT::default();
+                GetWindowRect(hwnd, &mut actual).unwrap();
+                assert_eq!(actual, suggested);
+                let point = |x: i32, y: i32| LPARAM(((y as u16 as u32) << 16 | x as u16 as u32) as isize);
+                assert!(!hit_test_current_frame(hwnd, state, point(100, 100)));
+                assert!(hit_test_current_frame(
+                    hwnd,
+                    state,
+                    point(100 + width - 1, 100 + height - 1)
+                ));
+                assert!(!hit_test_current_frame(hwnd, state, point(100 + width, 100)));
+            }
+            drop(pet);
+        }
     }
 
     #[test]

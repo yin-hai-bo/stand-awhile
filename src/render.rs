@@ -56,6 +56,45 @@ impl PixelSurface {
         self.pixels.fill(0);
     }
 
+    /// Resamples premultiplied BGRA pixels with bilinear interpolation.
+    pub fn draw_scaled_frame(&mut self, frame: &PreparedFrame) -> std::result::Result<(), SurfaceError> {
+        if frame.width == 0
+            || frame.height == 0
+            || Some(frame.pixels.len() as u64)
+                != (frame.width as u64)
+                    .checked_mul(frame.height as u64)
+                    .and_then(|n| n.checked_mul(4))
+        {
+            return Err(SurfaceError::BufferSizeMismatch);
+        }
+        if (self.width, self.height) == (frame.width, frame.height) {
+            return self.draw_frame(frame, SurfacePoint { x: 0, y: 0 });
+        }
+        for y in 0..self.height {
+            let source_y = ((y as f64 + 0.5) * frame.height as f64 / self.height as f64 - 0.5)
+                .clamp(0.0, (frame.height - 1) as f64);
+            let top = source_y as u32;
+            let bottom = (top + 1).min(frame.height - 1);
+            let fy = source_y - top as f64;
+            for x in 0..self.width {
+                let source_x = ((x as f64 + 0.5) * frame.width as f64 / self.width as f64 - 0.5)
+                    .clamp(0.0, (frame.width - 1) as f64);
+                let left = source_x as u32;
+                let right = (left + 1).min(frame.width - 1);
+                let fx = source_x - left as f64;
+                for channel in 0..4 {
+                    let pixel =
+                        |sx: u32, sy: u32| frame.pixels[((sy * frame.width + sx) * 4) as usize + channel] as f64;
+                    let upper = pixel(left, top) * (1.0 - fx) + pixel(right, top) * fx;
+                    let lower = pixel(left, bottom) * (1.0 - fx) + pixel(right, bottom) * fx;
+                    self.pixels[((y * self.width + x) * 4) as usize + channel] =
+                        (upper * (1.0 - fy) + lower * fy).round() as u8;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn draw_frame(&mut self, frame: &PreparedFrame, origin: SurfacePoint) -> std::result::Result<(), SurfaceError> {
         self.draw_frame_with_pivot(frame, origin, SurfacePoint { x: 0, y: 0 })
     }
@@ -154,6 +193,50 @@ mod tests {
     fn rejects_empty_surfaces() {
         assert_eq!(PixelSurface::new(0, 10), Err(SurfaceError::InvalidSize));
         assert_eq!(PixelSurface::new(10, 0), Err(SurfaceError::InvalidSize));
+    }
+
+    #[test]
+    fn scaled_frames_preserve_premultiplied_alpha_and_edges() {
+        let source = frame(2, 1, vec![0, 0, 0, 0, 200, 100, 50, 255]);
+        let mut surface = PixelSurface::new(3, 2).unwrap();
+        surface.draw_scaled_frame(&source).unwrap();
+        assert_eq!(
+            surface.pixels(),
+            &[
+                0, 0, 0, 0, 100, 50, 25, 128, 200, 100, 50, 255, 0, 0, 0, 0, 100, 50, 25, 128, 200, 100, 50, 255,
+            ]
+        );
+    }
+
+    #[test]
+    fn scaled_frame_at_original_size_is_unchanged() {
+        let source = frame(2, 2, (1..=16).collect());
+        let mut surface = PixelSurface::new(2, 2).unwrap();
+        surface.draw_scaled_frame(&source).unwrap();
+        assert_eq!(surface.pixels(), source.pixels);
+    }
+
+    #[test]
+    fn scaling_down_interpolates_both_axes() {
+        let source = frame(
+            2,
+            2,
+            vec![0, 0, 0, 255, 40, 40, 40, 255, 80, 80, 80, 255, 120, 120, 120, 255],
+        );
+        let mut surface = PixelSurface::new(1, 1).unwrap();
+        surface.draw_scaled_frame(&source).unwrap();
+        assert_eq!(surface.pixels(), &[60, 60, 60, 255]);
+    }
+
+    #[test]
+    fn scaled_frames_reject_invalid_buffers() {
+        let mut surface = PixelSurface::new(3, 3).unwrap();
+        for source in [frame(0, 1, vec![]), frame(1, 1, vec![0; 3])] {
+            assert_eq!(
+                surface.draw_scaled_frame(&source),
+                Err(SurfaceError::BufferSizeMismatch)
+            );
+        }
     }
 
     #[test]
