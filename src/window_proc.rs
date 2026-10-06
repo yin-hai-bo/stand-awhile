@@ -360,7 +360,14 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
             release_window_state(hwnd);
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
-        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+        _ => {
+            if let Some(state) = window_state(hwnd)
+                && state.tray_icon.handle_taskbar_created(hwnd, msg).unwrap_or(false)
+            {
+                return LRESULT(0);
+            }
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
     }
 }
 

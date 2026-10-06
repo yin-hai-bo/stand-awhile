@@ -3,16 +3,17 @@ use windows::Win32::{
     UI::{
         Shell::{
             NIF_ICON, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION,
-            NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW,
+            NOTIFY_ICON_MESSAGE, NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW,
         },
         WindowsAndMessaging::{
-            AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, HICON, MF_SEPARATOR, MF_STRING, SW_RESTORE,
-            SW_SHOW, SetForegroundWindow, ShowWindow, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, TrackPopupMenu,
-            WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_RBUTTONUP,
+            AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, HICON, MF_SEPARATOR, MF_STRING,
+            RegisterWindowMessageW, SW_RESTORE, SW_SHOW, SetForegroundWindow, ShowWindow, TPM_BOTTOMALIGN,
+            TPM_LEFTALIGN, TPM_RIGHTBUTTON, TrackPopupMenu, WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_LBUTTONDBLCLK,
+            WM_RBUTTONUP,
         },
     },
 };
-use windows::core::{Error, PCWSTR, Result};
+use windows::core::{Error, PCWSTR, Result, w};
 
 pub const WM_TRAYICON: u32 = WM_APP + 1;
 pub const TRAY_ICON_ID: u32 = 1;
@@ -23,6 +24,7 @@ pub const TRAY_MENU_START_ID: usize = 41004;
 pub const TRAY_MENU_SETTINGS_ID: usize = 41005;
 
 pub struct TrayIcon {
+    taskbar_created_message: u32,
     icon: HICON,
     tooltip: String,
     start_menu_text: String,
@@ -43,15 +45,13 @@ impl TrayIcon {
         about_text: &str,
         exit_menu_text: &str,
     ) -> Result<Self> {
-        let icon_data = notify_icon_data(hwnd, icon, tooltip);
-        unsafe {
-            if !Shell_NotifyIconW(NIM_ADD, &icon_data).as_bool() {
-                return Err(Error::from_win32());
-            }
+        let taskbar_created_message = unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) };
+        if taskbar_created_message == 0 {
+            return Err(Error::from_win32());
         }
-        set_notify_icon_version(hwnd, tooltip)?;
 
-        Ok(Self {
+        let tray = Self {
+            taskbar_created_message,
             icon,
             tooltip: tooltip.to_owned(),
             start_menu_text: start_menu_text.to_owned(),
@@ -59,7 +59,41 @@ impl TrayIcon {
             settings_text: settings_text.to_owned(),
             about_text: about_text.to_owned(),
             exit_menu_text: exit_menu_text.to_owned(),
-        })
+        };
+        tray.add(hwnd, notify_icon)?;
+        Ok(tray)
+    }
+
+    pub fn handle_taskbar_created(&self, hwnd: HWND, message: u32) -> Result<bool> {
+        self.handle_taskbar_created_with(hwnd, message, notify_icon)
+    }
+
+    fn handle_taskbar_created_with(
+        &self,
+        hwnd: HWND,
+        message: u32,
+        notify: impl FnMut(NOTIFY_ICON_MESSAGE, &NOTIFYICONDATAW) -> Result<()>,
+    ) -> Result<bool> {
+        if message != self.taskbar_created_message {
+            return Ok(false);
+        }
+        self.add(hwnd, notify)?;
+        Ok(true)
+    }
+
+    fn add(
+        &self,
+        hwnd: HWND,
+        mut notify: impl FnMut(NOTIFY_ICON_MESSAGE, &NOTIFYICONDATAW) -> Result<()>,
+    ) -> Result<()> {
+        let mut data = notify_icon_data(hwnd, self.icon, &self.tooltip);
+        notify(NIM_ADD, &data)?;
+        data.Anonymous.uVersion = NOTIFYICON_VERSION_4;
+        if let Err(error) = notify(NIM_SETVERSION, &data) {
+            let _ = notify(NIM_DELETE, &data);
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub fn delete(&self, hwnd: HWND) {
@@ -181,12 +215,9 @@ fn notify_icon_data(hwnd: HWND, icon: HICON, tooltip: &str) -> NOTIFYICONDATAW {
     data
 }
 
-fn set_notify_icon_version(hwnd: HWND, tooltip: &str) -> Result<()> {
-    let mut icon_data = notify_icon_data(hwnd, HICON::default(), tooltip);
-    icon_data.Anonymous.uVersion = NOTIFYICON_VERSION_4;
-
+fn notify_icon(message: NOTIFY_ICON_MESSAGE, data: &NOTIFYICONDATAW) -> Result<()> {
     unsafe {
-        if !Shell_NotifyIconW(NIM_SETVERSION, &icon_data).as_bool() {
+        if !Shell_NotifyIconW(message, data).as_bool() {
             return Err(Error::from_win32());
         }
     }
@@ -215,4 +246,90 @@ fn copy_wide_text<const N: usize>(value: &str, target: &mut [u16; N]) {
 
 fn loword(value: u32) -> u16 {
     (value & 0xFFFF) as u16
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tray() -> TrayIcon {
+        TrayIcon {
+            taskbar_created_message: unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) },
+            icon: HICON(123usize as _),
+            tooltip: "站一站".into(),
+            start_menu_text: "开始计时".into(),
+            show_menu_text: "显示主窗口".into(),
+            settings_text: "设置".into(),
+            about_text: "关于".into(),
+            exit_menu_text: "退出".into(),
+        }
+    }
+
+    #[test]
+    fn taskbar_created_readds_the_current_icon_and_restores_callback_version() {
+        let mut tray = tray();
+        assert_ne!(tray.taskbar_created_message, 0);
+        // Recovery uses the latest language, rather than the startup tooltip.
+        tray.tooltip = "Stand Awhile".into();
+        let hwnd = HWND(456usize as _);
+        for _ in 0..2 {
+            let mut calls = Vec::new();
+            assert!(
+                tray.handle_taskbar_created_with(hwnd, tray.taskbar_created_message, |command, data| {
+                    calls.push(command);
+                    assert_eq!(data.hWnd, hwnd);
+                    assert_eq!(data.uID, TRAY_ICON_ID);
+                    assert_eq!(data.hIcon, tray.icon);
+                    assert_eq!(data.uCallbackMessage, WM_TRAYICON);
+                    assert_eq!(data.uFlags, NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP);
+                    let length = data.szTip.iter().position(|c| *c == 0).unwrap();
+                    assert_eq!(String::from_utf16(&data.szTip[..length]).unwrap(), "Stand Awhile");
+                    if command == NIM_SETVERSION {
+                        assert_eq!(unsafe { data.Anonymous.uVersion }, NOTIFYICON_VERSION_4);
+                    }
+                    Ok(())
+                })
+                .unwrap()
+            );
+            assert_eq!(calls, [NIM_ADD, NIM_SETVERSION]);
+        }
+    }
+
+    #[test]
+    fn unrelated_messages_do_not_recreate_the_icon() {
+        let tray = tray();
+        assert!(
+            !tray
+                .handle_taskbar_created_with(HWND::default(), WM_TRAYICON, |_, _| {
+                    panic!("unrelated message must not touch the Shell icon");
+                })
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn failed_recovery_stops_after_add_and_cleans_up_if_version_fails() {
+        let tray = tray();
+        for failed_command in [NIM_ADD, NIM_SETVERSION] {
+            let mut calls = Vec::new();
+            let error =
+                tray.handle_taskbar_created_with(HWND::default(), tray.taskbar_created_message, |command, _| {
+                    calls.push(command);
+                    if command == failed_command {
+                        Err(Error::from_hresult(windows::core::HRESULT(0x8000_4005u32 as i32)))
+                    } else {
+                        Ok(())
+                    }
+                });
+            assert!(error.is_err());
+            assert_eq!(
+                calls,
+                if failed_command == NIM_ADD {
+                    vec![NIM_ADD]
+                } else {
+                    vec![NIM_ADD, NIM_SETVERSION, NIM_DELETE]
+                }
+            );
+        }
+    }
 }
