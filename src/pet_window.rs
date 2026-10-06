@@ -19,7 +19,7 @@ use windows::{
             SetWindowLongPtrW, SetWindowPos, ShowWindow, SystemParametersInfoW, TPM_LEFTALIGN, TPM_RETURNCMD,
             TPM_RIGHTBUTTON, TrackPopupMenuEx, WM_APP, WM_DPICHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
             WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED,
-            WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
+            WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
         },
     },
     core::{Error, PCWSTR, Result, w},
@@ -129,7 +129,7 @@ impl PetWindow {
             .unwrap_or(pet_position(width, height)?);
         let hwnd = unsafe {
             CreateWindowExW(
-                WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE,
+                WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
                 PET_WINDOW_CLASS,
                 w!("Stand Awhile Pet"),
                 WS_POPUP,
@@ -1038,6 +1038,103 @@ mod tests {
                 },
             );
             pet
+        }
+    }
+
+    #[test]
+    fn pet_stays_above_normal_windows_from_creation() {
+        use super::*;
+        use crate::animation::{AnimationClip, Frame, LoopMode};
+        use windows::Win32::{
+            System::LibraryLoader::GetModuleHandleW,
+            UI::WindowsAndMessaging::{
+                GW_HWNDPREV, GWL_EXSTYLE, GetForegroundWindow, GetWindow, HWND_TOP, SWP_NOMOVE, WS_EX_TOPMOST,
+                WS_VISIBLE,
+            },
+        };
+        let instance: HINSTANCE = unsafe { GetModuleHandleW(None) }.unwrap().into();
+        let animation = PreparedAnimation {
+            clip: AnimationClip::new(vec![Frame { id: 0 }], Duration::from_millis(120), LoopMode::Loop).unwrap(),
+            frames: vec![PreparedFrame {
+                width: 2,
+                height: 2,
+                pixels: [20, 40, 60, 255].repeat(4),
+                hitbox: None,
+            }],
+        };
+        let foreground = unsafe { GetForegroundWindow() };
+        let pet = PetWindow::create(
+            instance,
+            HWND::default(),
+            CharacterAnimations {
+                idle: animation.clone(),
+                walk: animation.clone(),
+                jump: animation,
+            },
+            Language::English,
+            None,
+            "Settings",
+        )
+        .unwrap();
+        let mut rect = RECT::default();
+        unsafe { GetWindowRect(pet.hwnd, &mut rect) }.unwrap();
+        // Place an ordinary window over the Pet without changing foreground focus.
+        let other = unsafe {
+            CreateWindowExW(
+                WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                w!("STATIC"),
+                w!("Pet topmost regression test"),
+                WS_POPUP | WS_VISIBLE,
+                rect.left,
+                rect.top,
+                rect.right - rect.left,
+                rect.bottom - rect.top,
+                None,
+                None,
+                Some(instance),
+                None,
+            )
+        }
+        .unwrap();
+        let check_topmost = || {
+            unsafe {
+                SetWindowPos(
+                    other,
+                    Some(HWND_TOP),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                )
+                .unwrap();
+            }
+            let mut above = unsafe { GetWindow(other, GW_HWNDPREV) }.unwrap_or_default();
+            while !above.is_invalid() && above != pet.hwnd {
+                above = unsafe { GetWindow(above, GW_HWNDPREV) }.unwrap_or_default();
+            }
+            assert_eq!(above, pet.hwnd, "ordinary window covers the Pet");
+            let style = unsafe { GetWindowLongPtrW(pet.hwnd, GWL_EXSTYLE) } as u32;
+            assert_ne!(style & WS_EX_TOPMOST.0, 0);
+            assert_ne!(style & WS_EX_NOACTIVATE.0, 0);
+            assert_eq!(unsafe { GetForegroundWindow() }, foreground);
+        };
+        // Keep assertions until after cleanup, including in the failing reproduction.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            check_topmost();
+            pet.hide();
+            pet.show();
+            check_topmost();
+            let state = state_mut(pet.hwnd).unwrap();
+            set_position(pet.hwnd, state, state.position).unwrap();
+            check_topmost();
+            pet.hide();
+            pet.show_reminder().unwrap();
+            check_topmost();
+        }));
+        unsafe { DestroyWindow(other) }.unwrap();
+        if let Err(error) = result {
+            std::panic::resume_unwind(error);
         }
     }
 
