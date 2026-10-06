@@ -40,13 +40,28 @@ use windows::core::{Error, PCWSTR, Result, w};
 
 const ABOUT_CLASS_NAME: windows::core::PCWSTR = w!("YHB-StandAwhileAboutWindow");
 const ABOUT_WINDOW_WIDTH: i32 = 600;
-const ABOUT_WINDOW_HEIGHT: i32 = 320;
+const ABOUT_WINDOW_HEIGHT: i32 = 480;
 const CONTENT_LEFT: i32 = 32;
 const CONTENT_TOP: i32 = 32;
 const CONTENT_RIGHT: i32 = 32;
 const GITHUB_LABEL_TOP: i32 = 240;
 const GITHUB_LABEL_GAP: i32 = 6;
 const GITHUB_URL: &str = "https://github.com/yin-hai-bo/stand-awhile";
+const ASSET_SOURCE_URL: &str = "https://opengameart.org/content/cat-dog-free-sprites";
+const ASSET_LICENSE_URL: &str = "https://creativecommons.org/publicdomain/zero/1.0/legalcode.en";
+const CREDIT_SOURCE_TOP: i32 = 384;
+const CREDIT_LICENSE_TOP: i32 = 408;
+const LABEL_LAYOUT: [(i32, i32); 9] = [
+    (CONTENT_TOP, 40),
+    (CONTENT_TOP + 64, 72),
+    (184, 32),
+    (GITHUB_LABEL_TOP, 32),
+    (296, 32),
+    (336, 48),
+    (CREDIT_SOURCE_TOP, 24),
+    (CREDIT_LICENSE_TOP, 24),
+    (CREDIT_LICENSE_TOP, 40),
+];
 const APP_ICON_RESOURCE_ID: usize = 1;
 const BUILD_COMMIT: &str = env!("BUILD_COMMIT");
 
@@ -57,7 +72,8 @@ struct AboutState {
     dpi: u32,
     theme: Theme,
     github_link: HyperLinkText,
-    labels: [HWND; 4],
+    credit_links: Vec<HyperLinkText>,
+    labels: [HWND; 9],
     title_font: HFONT,
     body_font: HFONT,
 }
@@ -114,6 +130,7 @@ fn run_about_modal(hwnd: HWND, owner: HWND) -> Result<()> {
         }
         let _ = SetForegroundWindow(hwnd);
     }
+    let mut quit_code = None;
     let result = (|| {
         let mut message = MSG::default();
         while unsafe { IsWindow(Some(hwnd)) }.as_bool() {
@@ -122,9 +139,7 @@ fn run_about_modal(hwnd: HWND, owner: HWND) -> Result<()> {
                 return Err(Error::from_win32());
             }
             if status == 0 {
-                unsafe {
-                    PostQuitMessage(message.wParam.0 as i32);
-                }
+                quit_code = Some(message.wParam.0 as i32);
                 break;
             }
             if !unsafe { IsDialogMessageW(hwnd, &message) }.as_bool() {
@@ -145,6 +160,11 @@ fn run_about_modal(hwnd: HWND, owner: HWND) -> Result<()> {
         }
         if owner_enabled && IsWindow(Some(owner)).as_bool() {
             let _ = SetForegroundWindow(owner);
+        }
+    }
+    if let Some(code) = quit_code {
+        unsafe {
+            PostQuitMessage(code);
         }
     }
     result
@@ -178,12 +198,37 @@ fn initialize_about_window(hwnd: HWND, language: Language, theme: Theme) -> Resu
         }
     };
 
+    let credit_links = credit_link_specs()
+        .into_iter()
+        .map(|(text, url)| {
+            HyperLinkText::create(
+                hwnd,
+                text,
+                body_font,
+                dpi,
+                move |hwnd| {
+                    let _ = open_url(hwnd, url);
+                },
+                about_link_layout,
+            )
+        })
+        .collect::<Result<Vec<_>>>();
+    let credit_links = match credit_links {
+        Ok(links) => links,
+        Err(error) => {
+            unsafe {
+                let _ = DestroyWindow(hwnd);
+            }
+            return Err(error);
+        }
+    };
     let mut state = Box::new(AboutState {
         language,
         dpi,
         theme,
         github_link,
-        labels: [HWND::default(); 4],
+        credit_links,
+        labels: [HWND::default(); 9],
         title_font: HFONT::default(),
         body_font,
     });
@@ -260,6 +305,9 @@ unsafe extern "system" fn about_window_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             if let Some(state) = about_state(hwnd) {
                 refresh_theme(hwnd, state.theme);
                 state.github_link.invalidate();
+                for link in &state.credit_links {
+                    link.invalidate();
+                }
                 invalidate_about_labels(hwnd);
             }
             LRESULT(0)
@@ -361,12 +409,17 @@ fn create_about_labels(hwnd: HWND, language: Language, state: &mut AboutState) -
 
     let commit = format!("Commit: {BUILD_COMMIT}");
     let labels = [
-        ("Stand Awhile", CONTENT_TOP, 40, state.title_font),
-        (about_description(language), CONTENT_TOP + 64, 72, state.body_font),
-        (commit.as_str(), 184, 32, state.body_font),
-        ("GitHub:", GITHUB_LABEL_TOP, 32, state.body_font),
+        ("Stand Awhile", state.title_font),
+        (about_description(language), state.body_font),
+        (commit.as_str(), state.body_font),
+        ("GitHub:", state.body_font),
+        (credit_heading(language), state.body_font),
+        (credit_thanks(language), state.body_font),
+        (credit_source_prefix(language), state.body_font),
+        (credit_license_prefix(language), state.body_font),
+        (credit_license_suffix(language), state.body_font),
     ];
-    for (index, (text, top, height, font)) in labels.into_iter().enumerate() {
+    for (index, ((text, font), (top, height))) in labels.into_iter().zip(LABEL_LAYOUT).enumerate() {
         let text = wide_null(text);
         let label = unsafe {
             CreateWindowExW(
@@ -417,6 +470,14 @@ fn update_about_dpi(hwnd: HWND, dpi: u32) -> Result<()> {
         }
         return Err(error);
     }
+    for link in &state.credit_links {
+        if let Err(error) = link.set_font(body_font, dpi) {
+            unsafe {
+                let _ = DeleteObject(title_font.into());
+            }
+            return Err(error);
+        }
+    }
     let labels = state.labels;
     let old_title = state.title_font;
     unsafe {
@@ -459,10 +520,7 @@ fn layout_about_window(hwnd: HWND) -> Result<()> {
 
 fn layout_github_link(state: &AboutState, hwnd: HWND, hdc: HDC) -> Result<()> {
     let scale = |value| crate::scale_dimension(value, state.dpi);
-    for (label, (top, height)) in state.labels[..3]
-        .iter()
-        .zip([(CONTENT_TOP, 40), (CONTENT_TOP + 64, 72), (184, 32)])
-    {
+    for (label, (top, height)) in state.labels.iter().zip(LABEL_LAYOUT) {
         unsafe {
             MoveWindow(
                 *label,
@@ -503,6 +561,52 @@ fn layout_github_link(state: &AboutState, hwnd: HWND, hdc: HDC) -> Result<()> {
         right: left + link_width,
         bottom: top + link_height,
     })?;
+
+    for (index, label_index, row_top, prefix) in [
+        (0, 6, CREDIT_SOURCE_TOP, credit_source_prefix(state.language)),
+        (1, 7, CREDIT_LICENSE_TOP, credit_license_prefix(state.language)),
+    ] {
+        let prefix_rect = unsafe {
+            let old_font = SelectObject(hdc, body_font.into());
+            let measured = measure_text_rect(hdc, prefix)?;
+            let _ = SelectObject(hdc, old_font);
+            measured
+        };
+        unsafe {
+            MoveWindow(
+                state.labels[label_index],
+                scale(CONTENT_LEFT),
+                scale(row_top),
+                prefix_rect.right,
+                scale(24),
+                true,
+            )?;
+        }
+        let link = &state.credit_links[index];
+        let (_, height) = link.window_size(hdc)?;
+        let width = link.measure_text_rect(hdc)?.right;
+        let left = scale(CONTENT_LEFT) + prefix_rect.right;
+        let top = scale(row_top) - (height - prefix_rect.bottom) / 2;
+        link.move_to(RECT {
+            left,
+            top,
+            right: left + width,
+            bottom: top + height,
+        })?;
+
+        if index == 1 {
+            unsafe {
+                MoveWindow(
+                    state.labels[8],
+                    left + width,
+                    scale(row_top),
+                    scale(ABOUT_WINDOW_WIDTH - CONTENT_RIGHT) - left - width,
+                    scale(40),
+                    true,
+                )?;
+            }
+        }
+    }
 
     unsafe {
         let _ = InvalidateRect(Some(hwnd), None, false);
@@ -573,6 +677,48 @@ fn about_description(language: Language) -> &'static str {
             "A lightweight Windows desktop reminder that helps you stand up, stretch, and move regularly during long work sessions."
         }
     }
+}
+
+fn credit_heading(language: Language) -> &'static str {
+    match language {
+        Language::Chinese => "动画资源鸣谢",
+        Language::English => "Animation credits",
+    }
+}
+
+fn credit_thanks(language: Language) -> &'static str {
+    match language {
+        Language::Chinese => "感谢 pzUH 免费分享 Cat & Dog - Free Sprites 猫狗动画。",
+        Language::English => "Thanks to pzUH for sharing the Cat & Dog - Free Sprites animations.",
+    }
+}
+
+fn credit_source_prefix(language: Language) -> &'static str {
+    match language {
+        Language::Chinese => "下载来源：",
+        Language::English => "Downloaded from ",
+    }
+}
+
+fn credit_license_prefix(language: Language) -> &'static str {
+    match language {
+        Language::Chinese => "许可：",
+        Language::English => "License: ",
+    }
+}
+
+fn credit_license_suffix(language: Language) -> &'static str {
+    match language {
+        Language::Chinese => "（公共领域贡献）。",
+        Language::English => " (public domain dedication).",
+    }
+}
+
+fn credit_link_specs() -> [(&'static str, &'static str); 2] {
+    [
+        ("OpenGameArt", ASSET_SOURCE_URL),
+        ("CC0 1.0 Universal", ASSET_LICENSE_URL),
+    ]
 }
 
 fn about_state(hwnd: HWND) -> Option<&'static AboutState> {
@@ -733,8 +879,8 @@ mod tests {
                 WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
                 0,
                 0,
-                600,
-                320,
+                ABOUT_WINDOW_WIDTH,
+                ABOUT_WINDOW_HEIGHT,
                 None,
                 None,
                 Some(instance),
@@ -762,8 +908,8 @@ mod tests {
             let suggested = RECT {
                 left: 20,
                 top: 20,
-                right: 20 + 600 * dpi as i32 / 96,
-                bottom: 20 + 320 * dpi as i32 / 96,
+                right: 20 + ABOUT_WINDOW_WIDTH * dpi as i32 / 96,
+                bottom: 20 + ABOUT_WINDOW_HEIGHT * dpi as i32 / 96,
             };
             unsafe {
                 SendMessageW(
@@ -800,6 +946,8 @@ mod tests {
             }
             assert_eq!(actual.right - actual.left, 536 * dpi as i32 / 96);
             assert_eq!(actual.bottom - actual.top, 72 * dpi as i32 / 96);
+            let client_left = actual.left - crate::scale_dimension(CONTENT_LEFT, dpi as u32);
+            let client_top = actual.top - crate::scale_dimension(CONTENT_TOP + 64, dpi as u32);
             // A link at another DPI must not change this dialog's font or measurements.
             other_link.set_font(other_font, 96)?;
             let hdc = unsafe { windows::Win32::Graphics::Gdi::GetDC(Some(window.0)) };
@@ -821,6 +969,28 @@ mod tests {
                 );
             }
             let label_rect = measure_text_rect(hdc, "GitHub:")?;
+            for (index, text) in [(5, credit_thanks(language)), (8, credit_license_suffix(language))] {
+                let mut text_rect = RECT {
+                    right: {
+                        let mut label_rect = RECT::default();
+                        unsafe {
+                            GetWindowRect(state.labels[index], &mut label_rect)?;
+                        }
+                        label_rect.right - label_rect.left
+                    },
+                    ..Default::default()
+                };
+                let mut text = wide_text(text);
+                unsafe {
+                    DrawTextW(hdc, &mut text, &mut text_rect, DT_CALCRECT | DT_LEFT | DT_WORDBREAK);
+                }
+                assert!(
+                    text_rect.bottom <= crate::scale_dimension(LABEL_LAYOUT[index].1, dpi as u32),
+                    "credits must fit their STATIC controls"
+                );
+            }
+            let source_rect = measure_text_rect(hdc, credit_source_prefix(language))?;
+            let license_rect = measure_text_rect(hdc, credit_license_prefix(language))?;
             unsafe {
                 let _ = SelectObject(hdc, old_font);
             }
@@ -860,6 +1030,45 @@ mod tests {
                     <= client.right,
                 "link must fit horizontally"
             );
+            let mut prefix_rect = RECT::default();
+            assert_eq!(state.credit_links.len(), 2);
+            for (index, link) in state.credit_links.iter().enumerate() {
+                let font = font_info(link.hwnd());
+                assert_eq!(font.lfFaceName, body.lfFaceName);
+                assert_eq!(font.lfHeight, body.lfHeight);
+                assert_eq!(font.lfUnderline, 1);
+                unsafe {
+                    GetWindowRect(link.hwnd(), &mut actual)?;
+                    GetWindowRect(state.labels[6 + index], &mut prefix_rect)?;
+                }
+                assert_eq!(link.text(), credit_link_specs()[index].0);
+                assert_eq!(actual.left, prefix_rect.right, "source link must follow its prefix");
+                let text_height = if index == 0 {
+                    source_rect.bottom
+                } else {
+                    license_rect.bottom
+                };
+                assert!(
+                    (actual.top + (actual.bottom - actual.top - text_height) / 2 - prefix_rect.top).abs() <= 1,
+                    "source prefix and link text must align vertically"
+                );
+                if index == 1 {
+                    let mut suffix_rect = RECT::default();
+                    unsafe {
+                        GetWindowRect(state.labels[8], &mut suffix_rect)?;
+                    }
+                    assert_eq!(suffix_rect.left, actual.right);
+                    assert_eq!(suffix_rect.top, prefix_rect.top);
+                }
+                assert!(
+                    actual.right <= client_left + client.right - crate::scale_dimension(CONTENT_RIGHT, dpi as u32),
+                    "credit links must fit horizontally"
+                );
+                assert!(
+                    actual.bottom <= client_top + client.bottom,
+                    "credit links must fit vertically"
+                );
+            }
         }
         let state = about_state(window.0).unwrap();
         let body_font = state.body_font;
@@ -897,5 +1106,19 @@ mod tests {
     fn dpi_changed_resizes_window_controls_and_fonts_without_accumulating_scale() -> Result<()> {
         check_dpi_changes(Language::English)?;
         check_dpi_changes(Language::Chinese)
+    }
+
+    #[test]
+    fn animation_credits_match_checked_in_asset_provenance() {
+        let metadata: serde_json::Value =
+            serde_json::from_str(include_str!("../assets/pets/cat-dog/manifest.json")).unwrap();
+        assert_eq!(metadata["source"].as_str().unwrap(), ASSET_SOURCE_URL);
+        for language in [Language::Chinese, Language::English] {
+            let text = credit_thanks(language);
+            assert!(text.contains(metadata["author"].as_str().unwrap()));
+            assert!(credit_link_specs()[1].0.contains(metadata["license"].as_str().unwrap()));
+            assert!(text.contains("Cat & Dog - Free Sprites"));
+            assert_eq!(credit_link_specs()[0], ("OpenGameArt", ASSET_SOURCE_URL));
+        }
     }
 }
