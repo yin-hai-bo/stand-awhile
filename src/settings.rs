@@ -4,8 +4,9 @@ use windows::{
     Win32::{
         Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::Gdi::{
-            CreateSolidBrush, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW, FillRect, HBRUSH, HDC,
-            HFONT, HGDIOBJ, InvalidateRect, SelectObject, SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
+            CreateFontIndirectW, CreateSolidBrush, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW,
+            FillRect, GetObjectW, HBRUSH, HDC, HFONT, HGDIOBJ, InvalidateRect, LOGFONTW, SelectObject, SetBkColor,
+            SetBkMode, SetTextColor, TRANSPARENT,
         },
         UI::{
             Controls::{BST_CHECKED, DRAWITEMSTRUCT, ODS_SELECTED},
@@ -64,6 +65,7 @@ struct SettingsState {
     theme: [HWND; 3],
     close_behavior: [HWND; 2],
     font: Option<HFONT>,
+    title_font: Option<HFONT>,
     font_controls: Vec<HWND>,
     dark_mode: bool,
     background_brush: HBRUSH,
@@ -84,6 +86,7 @@ pub fn create_settings_panel(parent: HWND, instance: HINSTANCE, config: Config, 
         theme: [HWND::default(); 3],
         close_behavior: [HWND::default(); 2],
         font,
+        title_font: None,
         font_controls: Vec::new(),
         dark_mode,
         background_brush: HBRUSH::default(),
@@ -294,10 +297,22 @@ unsafe extern "system" fn settings_window_proc(hwnd: HWND, msg: u32, wparam: WPA
         WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT | WM_CTLCOLORBTN | WM_CTLCOLORLISTBOX => {
             if let Some(state) = state_mut(hwnd) {
                 let hdc = HDC(wparam.0 as _);
-                let (text, background) = if state.dark_mode {
-                    (COLORREF(0x00FAFAFA), COLORREF(0x00202020))
+                let title = HWND(lparam.0 as _);
+                let text = if state.font_controls[..5].contains(&title) {
+                    if state.dark_mode {
+                        COLORREF(0x0066D1FF)
+                    } else {
+                        COLORREF(0x008E3A5B)
+                    }
+                } else if state.dark_mode {
+                    COLORREF(0x00FAFAFA)
                 } else {
-                    (COLORREF(0x00202020), COLORREF(0x00F0F0F0))
+                    COLORREF(0x00202020)
+                };
+                let background = if state.dark_mode {
+                    COLORREF(0x00202020)
+                } else {
+                    COLORREF(0x00F0F0F0)
                 };
                 unsafe {
                     let _ = SetTextColor(hdc, text);
@@ -372,6 +387,9 @@ unsafe extern "system" fn settings_window_proc(hwnd: HWND, msg: u32, wparam: WPA
                     }
                     if !state.control_brush.is_invalid() {
                         let _ = DeleteObject(HGDIOBJ(state.control_brush.0));
+                    }
+                    if let Some(font) = state.title_font.take() {
+                        let _ = DeleteObject(HGDIOBJ(font.0));
                     }
                 }
             }
@@ -513,8 +531,12 @@ fn create_controls(hwnd: HWND, state: &mut SettingsState) {
         if state.config.tray_when_close { "tray" } else { "exit" },
         &["exit", "tray"],
     );
+    replace_title_font(state);
     for control in &state.font_controls {
         set_font(*control, state.font);
+    }
+    for title in &state.font_controls[..5] {
+        set_font(*title, state.title_font);
     }
 }
 
@@ -523,8 +545,12 @@ pub fn update_settings_panel_font(hwnd: HWND, dpi: u32) {
         return;
     };
     state.font = crate::ui::font::common_gui_font(dpi, state.config.language() == crate::i18n::Language::Chinese);
+    replace_title_font(state);
     for control in &state.font_controls {
         set_font(*control, state.font);
+    }
+    for title in &state.font_controls[..5] {
+        set_font(*title, state.title_font);
     }
     layout_settings_panel(hwnd, dpi);
 }
@@ -555,6 +581,32 @@ pub fn refresh_settings_panel_theme(hwnd: HWND, config: &Config) {
             let _ = InvalidateRect(Some(*control), None, true);
         }
     }
+}
+
+fn replace_title_font(state: &mut SettingsState) {
+    if let Some(font) = state.title_font.take() {
+        unsafe {
+            let _ = DeleteObject(HGDIOBJ(font.0));
+        }
+    }
+    state.title_font = state.font.and_then(create_bold_font);
+}
+
+fn create_bold_font(font: HFONT) -> Option<HFONT> {
+    let mut logfont = LOGFONTW::default();
+    let copied = unsafe {
+        GetObjectW(
+            HGDIOBJ(font.0),
+            std::mem::size_of::<LOGFONTW>() as i32,
+            Some((&mut logfont as *mut LOGFONTW).cast()),
+        )
+    };
+    if copied == 0 {
+        return None;
+    }
+    logfont.lfWeight = 700;
+    let bold_font = unsafe { CreateFontIndirectW(&logfont) };
+    (!bold_font.is_invalid()).then_some(bold_font)
 }
 
 fn set_font(hwnd: HWND, font: Option<HFONT>) {
