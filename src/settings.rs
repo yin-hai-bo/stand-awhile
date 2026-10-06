@@ -12,13 +12,12 @@ use windows::{
             HiDpi::GetDpiForWindow,
             Input::KeyboardAndMouse::SetFocus,
             WindowsAndMessaging::{
-                BM_GETCHECK, BM_SETCHECK, BN_CLICKED, BS_AUTOCHECKBOX, BS_AUTORADIOBUTTON, BS_FLAT, BS_OWNERDRAW,
-                CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, EN_KILLFOCUS, ES_NUMBER, GWLP_USERDATA,
-                GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, HMENU, IDC_ARROW, LoadCursorW,
-                RegisterClassExW, SendMessageW, SetWindowLongPtrW, SetWindowTextW, WM_CLOSE, WM_COMMAND, WM_CREATE,
-                WM_CTLCOLORBTN, WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_ERASEBKGND, WM_NCACTIVATE,
-                WM_NCDESTROY, WM_SETFOCUS, WM_SETFONT, WNDCLASSEXW, WS_CHILD, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT,
-                WS_GROUP, WS_TABSTOP, WS_VISIBLE,
+                BM_GETCHECK, BM_SETCHECK, BN_CLICKED, BS_AUTORADIOBUTTON, BS_OWNERDRAW, CREATESTRUCTW, CreateWindowExW,
+                DefWindowProcW, DestroyWindow, EN_KILLFOCUS, ES_NUMBER, GWLP_USERDATA, GetWindowLongPtrW,
+                GetWindowTextLengthW, GetWindowTextW, HMENU, IDC_ARROW, LoadCursorW, RegisterClassExW, SendMessageW,
+                SetWindowLongPtrW, SetWindowTextW, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLOREDIT,
+                WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_ERASEBKGND, WM_NCACTIVATE, WM_NCDESTROY, WM_SETFOCUS,
+                WM_SETFONT, WNDCLASSEXW, WS_CHILD, WS_EX_CONTROLPARENT, WS_GROUP, WS_TABSTOP, WS_VISIBLE,
             },
         },
     },
@@ -43,13 +42,13 @@ const LANGUAGE_EN_ID: usize = 15;
 const THEME_SYSTEM_ID: usize = 16;
 const THEME_LIGHT_ID: usize = 17;
 const THEME_DARK_ID: usize = 18;
-const TRAY_ID: usize = 19;
+const CLOSE_EXIT_ID: usize = 19;
+const CLOSE_TRAY_ID: usize = 20;
 
 const BASE_GRID_LEFT: i32 = 72;
 const BASE_TITLE_WIDTH: i32 = 196;
 const BASE_COLUMN_GAP: i32 = 12;
 const BASE_CONTROL_WIDTH: i32 = 280;
-const BASE_CHECK_WIDTH: i32 = 360;
 const BASE_GRID_TOP: i32 = 80;
 const BASE_ROW_HEIGHT: i32 = 32;
 const BASE_ROW_GAP: i32 = 16;
@@ -63,7 +62,7 @@ struct SettingsState {
     character: [HWND; 2],
     language: [HWND; 3],
     theme: [HWND; 3],
-    tray: HWND,
+    close_behavior: [HWND; 2],
     font: Option<HFONT>,
     font_controls: Vec<HWND>,
     dark_mode: bool,
@@ -83,7 +82,7 @@ pub fn create_settings_panel(parent: HWND, instance: HINSTANCE, config: Config, 
         character: [HWND::default(); 2],
         language: [HWND::default(); 3],
         theme: [HWND::default(); 3],
-        tray: HWND::default(),
+        close_behavior: [HWND::default(); 2],
         font,
         font_controls: Vec::new(),
         dark_mode,
@@ -145,7 +144,6 @@ pub fn layout_settings_panel(hwnd: HWND, dpi: u32) {
     let title_width = scale(BASE_TITLE_WIDTH);
     let control_x = scale(BASE_GRID_LEFT + BASE_TITLE_WIDTH + BASE_COLUMN_GAP);
     let control_width = scale(BASE_CONTROL_WIDTH);
-    let check_width = scale(BASE_CHECK_WIDTH);
     let row_height = scale(BASE_ROW_HEIGHT);
     let row_step = scale(BASE_ROW_HEIGHT + BASE_ROW_GAP);
     let grid_top = scale(BASE_GRID_TOP);
@@ -155,12 +153,15 @@ pub fn layout_settings_panel(hwnd: HWND, dpi: u32) {
         state.font_controls[1],
         state.font_controls[2],
         state.font_controls[3],
+        state.font_controls[4],
     ];
     for (index, label) in labels.into_iter().enumerate() {
         let y = grid_top + index as i32 * row_step;
         move_control(label, title_x, y, title_width, row_height);
     }
-    move_control(state.period, control_x, grid_top, control_width, row_height);
+    let edit_height = scale(24);
+    let edit_y = grid_top + (row_height - edit_height) / 2;
+    move_control(state.period, control_x, edit_y, control_width, edit_height);
     layout_radio_group(
         &state.character,
         control_x,
@@ -185,7 +186,14 @@ pub fn layout_settings_panel(hwnd: HWND, dpi: u32) {
         row_height,
         dpi,
     );
-    move_control(state.tray, control_x, grid_top + 4 * row_step, check_width, row_height);
+    layout_radio_group(
+        &state.close_behavior,
+        control_x,
+        grid_top + 4 * row_step,
+        control_width,
+        row_height,
+        dpi,
+    );
 }
 
 fn layout_radio_group(radios: &[HWND], x: i32, y: i32, width: i32, height: i32, dpi: u32) {
@@ -199,6 +207,28 @@ fn layout_radio_group(radios: &[HWND], x: i32, y: i32, width: i32, height: i32, 
 fn move_control(hwnd: HWND, x: i32, y: i32, width: i32, height: i32) {
     unsafe {
         let _ = windows::Win32::UI::WindowsAndMessaging::MoveWindow(hwnd, x, y, width, height, true);
+    }
+}
+
+fn draw_period_underline(hwnd: HWND, hdc: HDC, dark_mode: bool) {
+    let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
+    let scale = |value: i32| value * dpi as i32 / 96;
+    let y = scale(BASE_GRID_TOP + BASE_ROW_HEIGHT) - 1;
+    let rect = RECT {
+        left: scale(BASE_GRID_LEFT + BASE_TITLE_WIDTH + BASE_COLUMN_GAP),
+        top: y,
+        right: scale(BASE_GRID_LEFT + BASE_TITLE_WIDTH + BASE_COLUMN_GAP + BASE_CONTROL_WIDTH),
+        bottom: y + 1,
+    };
+    let color = if dark_mode {
+        COLORREF(0x00606060)
+    } else {
+        COLORREF(0x00A0A0A0)
+    };
+    unsafe {
+        let brush = CreateSolidBrush(color);
+        let _ = FillRect(hdc, &rect, brush);
+        let _ = DeleteObject(HGDIOBJ(brush.0));
     }
 }
 
@@ -256,6 +286,7 @@ unsafe extern "system" fn settings_window_proc(hwnd: HWND, msg: u32, wparam: WPA
                     let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rect);
                     let _ = FillRect(hdc, &rect, state.background_brush);
                 }
+                draw_period_underline(hwnd, hdc, state.dark_mode);
                 return LRESULT(1);
             }
             LRESULT(0)
@@ -287,7 +318,7 @@ unsafe extern "system" fn settings_window_proc(hwnd: HWND, msg: u32, wparam: WPA
             if notification == BN_CLICKED {
                 match id {
                     CHARACTER_CAT_ID | CHARACTER_DOG_ID | LANGUAGE_AUTO_ID | LANGUAGE_ZH_ID | LANGUAGE_EN_ID
-                    | THEME_SYSTEM_ID | THEME_LIGHT_ID | THEME_DARK_ID | TRAY_ID => {
+                    | THEME_SYSTEM_ID | THEME_LIGHT_ID | THEME_DARK_ID | CLOSE_EXIT_ID | CLOSE_TRAY_ID => {
                         if let Some(state) = state_mut(hwnd) {
                             if let Ok(config) = read_config_without_period(state) {
                                 if config.save().is_ok() {
@@ -412,20 +443,26 @@ fn create_controls(hwnd: HWND, state: &mut SettingsState) {
             false,
         ),
     ];
-    state.tray = create_check_box(
-        hwnd,
-        state.instance,
-        TRAY_ID,
-        if chinese {
-            "关闭时缩小到系统托盘"
-        } else {
-            "Minimize to system tray when closing"
-        },
-        72,
-        280,
-        360,
-        32,
-    );
+    state.close_behavior = [
+        create_radio(
+            hwnd,
+            state.instance,
+            CLOSE_EXIT_ID,
+            if chinese { "退出程序" } else { "Exit program" },
+            true,
+        ),
+        create_radio(
+            hwnd,
+            state.instance,
+            CLOSE_TRAY_ID,
+            if chinese {
+                "缩小为托盘图标"
+            } else {
+                "Minimize to tray"
+            },
+            false,
+        ),
+    ];
     let label = create_static(
         hwnd,
         state.instance,
@@ -450,16 +487,32 @@ fn create_controls(hwnd: HWND, state: &mut SettingsState) {
     font_controls.push(label);
     let label = create_static(hwnd, state.instance, if chinese { "主题：" } else { "Theme:" }, 72, 228);
     font_controls.push(label);
+    let label = create_static(
+        hwnd,
+        state.instance,
+        if chinese {
+            "关闭主窗口行为："
+        } else {
+            "Close behavior:"
+        },
+        72,
+        276,
+    );
+    font_controls.push(label);
     font_controls.push(state.period);
     font_controls.extend(state.character);
     font_controls.extend(state.language);
     font_controls.extend(state.theme);
-    font_controls.push(state.tray);
+    font_controls.extend(state.close_behavior);
     state.font_controls = font_controls;
     set_radio_group(&state.character, &state.config.character, &["cat", "dog"]);
     set_radio_group(&state.language, &state.config.language, &["auto", "zh", "en"]);
     set_radio_group(&state.theme, &state.config.theme, &["system", "light", "dark"]);
-    set_check(state.tray, state.config.tray_when_close);
+    set_radio_group(
+        &state.close_behavior,
+        if state.config.tray_when_close { "tray" } else { "exit" },
+        &["exit", "tray"],
+    );
     for control in &state.font_controls {
         set_font(*control, state.font);
     }
@@ -586,7 +639,7 @@ fn read_config(state: &SettingsState) -> Result<Config> {
     config.character = radio_text(&state.character, &["cat", "dog"]);
     config.language = radio_text(&state.language, &["auto", "zh", "en"]);
     config.theme = radio_text(&state.theme, &["system", "light", "dark"]);
-    config.tray_when_close = is_checked(state.tray);
+    config.tray_when_close = is_checked(state.close_behavior[1]);
     Ok(config)
 }
 
@@ -610,7 +663,7 @@ fn read_config_without_period(state: &SettingsState) -> Result<Config> {
     config.character = radio_text(&state.character, &["cat", "dog"]);
     config.language = radio_text(&state.language, &["auto", "zh", "en"]);
     config.theme = radio_text(&state.theme, &["system", "light", "dark"]);
-    config.tray_when_close = is_checked(state.tray);
+    config.tray_when_close = is_checked(state.close_behavior[1]);
     Ok(config)
 }
 
@@ -640,7 +693,7 @@ fn create_edit(parent: HWND, instance: HINSTANCE, id: usize, text: &str, x: i32,
     let value = wide(text);
     unsafe {
         CreateWindowExW(
-            WS_EX_CLIENTEDGE,
+            Default::default(),
             w!("EDIT"),
             PCWSTR(value.as_ptr()),
             WS_CHILD
@@ -727,29 +780,6 @@ fn create_button(
         )
         .unwrap_or_default()
     }
-}
-
-fn create_check_box(
-    parent: HWND,
-    instance: HINSTANCE,
-    id: usize,
-    text: &str,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-) -> HWND {
-    create_button_with_style(
-        parent,
-        instance,
-        id,
-        text,
-        (BS_AUTOCHECKBOX | BS_FLAT) as u32,
-        x,
-        y,
-        width,
-        height,
-    )
 }
 
 fn set_radio_group(radios: &[HWND], value: &str, values: &[&str]) {
