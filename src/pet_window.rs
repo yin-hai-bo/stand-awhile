@@ -28,6 +28,7 @@ use crate::{
     animation::{AnimationPlayer, PlaybackState},
     asset::{CharacterAnimations, PreparedAnimation, PreparedFrame},
     config::{PetPosition, save_pet_position},
+    i18n::Language,
     render::{LayeredRenderer, PixelSurface, SurfacePoint},
     speech_bubble::SpeechBubbleConfig,
     speech_bubble_window::SpeechBubbleController,
@@ -76,7 +77,10 @@ struct PetWindowState {
     hide_animation: Option<HideAnimation>,
     next_walk_at: Instant,
     speech_bubble: SpeechBubbleController,
+    start_menu_text: String,
+    show_main_menu_text: String,
     settings_menu_text: String,
+    exit_menu_text: String,
 }
 
 struct DragState {
@@ -172,7 +176,10 @@ impl PetWindow {
                 hide_animation: None,
                 next_walk_at: now + WALK_START_DELAY,
                 speech_bubble,
+                start_menu_text: "Start Timer".to_owned(),
+                show_main_menu_text: "Show Main Window".to_owned(),
                 settings_menu_text: settings_menu_text.to_owned(),
+                exit_menu_text: "Exit".to_owned(),
             },
         );
 
@@ -228,9 +235,28 @@ impl PetWindow {
         }
     }
 
-    pub fn set_settings_menu_text(&self, text: &str) {
+    pub fn set_menu_texts(&self, language: Language) {
         if let Some(state) = state_mut(self.hwnd) {
-            state.settings_menu_text = text.to_owned();
+            state.start_menu_text = match language {
+                Language::Chinese => "开始计时",
+                Language::English => "Start Timer",
+            }
+            .to_owned();
+            state.show_main_menu_text = match language {
+                Language::Chinese => "显示主窗口",
+                Language::English => "Show Main Window",
+            }
+            .to_owned();
+            state.settings_menu_text = match language {
+                Language::Chinese => "设置",
+                Language::English => "Settings",
+            }
+            .to_owned();
+            state.exit_menu_text = match language {
+                Language::Chinese => "退出",
+                Language::English => "Exit",
+            }
+            .to_owned();
         }
     }
 
@@ -611,11 +637,14 @@ fn end_drag(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
 fn show_context_menu(hwnd: HWND, state: &PetWindowState) -> Result<()> {
     let menu = unsafe { CreatePopupMenu()? };
     unsafe {
-        AppendMenuW(menu, MF_STRING, PET_MENU_START, w!("Start Timer"))?;
-        AppendMenuW(menu, MF_STRING, PET_MENU_SHOW_MAIN, w!("Show Main Window"))?;
+        let start_text = wide_null(&state.start_menu_text);
+        let show_main_text = wide_null(&state.show_main_menu_text);
         let settings_text = wide_null(&state.settings_menu_text);
+        let exit_text = wide_null(&state.exit_menu_text);
+        AppendMenuW(menu, MF_STRING, PET_MENU_START, PCWSTR(start_text.as_ptr()))?;
+        AppendMenuW(menu, MF_STRING, PET_MENU_SHOW_MAIN, PCWSTR(show_main_text.as_ptr()))?;
         AppendMenuW(menu, MF_STRING, PET_MENU_SETTINGS, PCWSTR(settings_text.as_ptr()))?;
-        AppendMenuW(menu, MF_STRING, PET_MENU_EXIT, w!("Exit"))?;
+        AppendMenuW(menu, MF_STRING, PET_MENU_EXIT, PCWSTR(exit_text.as_ptr()))?;
     }
 
     let mut point = POINT::default();

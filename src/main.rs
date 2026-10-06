@@ -151,6 +151,7 @@ fn run() -> Result<()> {
         config.pet_position.clone(),
         settings_menu_text(language),
     )?;
+    pet_window.set_menu_texts(language);
     let control_buttons = create_control_buttons(timer_panel, instance)?;
     let tray_icon = TrayIcon::create(
         hwnd,
@@ -158,7 +159,6 @@ fn run() -> Result<()> {
         main_window_title(language),
         tray_menu_start_text(language),
         tray_menu_show_text(language),
-        tray_menu_open_config_text(language),
         settings_menu_text(language),
         tray_menu_about_text(language),
         tray_menu_exit_text(language),
@@ -273,13 +273,6 @@ pub(crate) fn tray_menu_exit_text(language: i18n::Language) -> &'static str {
     match language {
         i18n::Language::Chinese => "退出",
         i18n::Language::English => "Exit",
-    }
-}
-
-pub(crate) fn tray_menu_open_config_text(language: i18n::Language) -> &'static str {
-    match language {
-        i18n::Language::Chinese => "打开配置目录",
-        i18n::Language::English => "Open config folder",
     }
 }
 

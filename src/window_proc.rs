@@ -26,11 +26,9 @@ use crate::ui::{
     theme::{Theme, paint_background, refresh_theme},
 };
 use crate::{
-    config::{Config, open_config_directory, show_config_open_error},
+    config::Config,
     i18n::Language,
-    tray_icon::{
-        TRAY_MENU_ABOUT_ID, TRAY_MENU_OPEN_CONFIG_ID, TRAY_MENU_SETTINGS_ID, TRAY_MENU_START_ID, TrayIcon, WM_TRAYICON,
-    },
+    tray_icon::{TRAY_MENU_ABOUT_ID, TRAY_MENU_SETTINGS_ID, TRAY_MENU_START_ID, TrayIcon, WM_TRAYICON},
 };
 
 use windows::Win32::{
@@ -562,15 +560,6 @@ fn handle_tray_menu_command(hwnd: HWND, wparam: WPARAM) -> bool {
             activate_button(hwnd, ControlButton::Play);
             true
         }
-        TRAY_MENU_OPEN_CONFIG_ID => {
-            if let Err(error) = open_config_directory(hwnd) {
-                let language = window_state(hwnd)
-                    .map(|state| state.language)
-                    .unwrap_or(Language::English);
-                show_config_open_error(hwnd, &error, language);
-            }
-            true
-        }
         TRAY_MENU_ABOUT_ID => {
             let (language, theme) = window_state(hwnd)
                 .map(|state| (state.language, state.theme))
@@ -694,12 +683,11 @@ fn apply_saved_settings(hwnd: HWND) {
             crate::i18n::main_window_title(language),
             crate::tray_menu_start_text(language),
             crate::tray_menu_show_text(language),
-            crate::tray_menu_open_config_text(language),
             settings_menu_text(language),
             crate::tray_menu_about_text(language),
             crate::tray_menu_exit_text(language),
         );
-        state.pet_window.set_settings_menu_text(settings_menu_text(language));
+        state.pet_window.set_menu_texts(language);
         unsafe {
             let title = crate::i18n::main_window_title(language)
                 .encode_utf16()

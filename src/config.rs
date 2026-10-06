@@ -3,16 +3,12 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use windows::Win32::{
-    Foundation::HWND,
     System::Com::CoTaskMemFree,
-    UI::{
-        Shell::{FOLDERID_RoamingAppData, SHGetKnownFolderPath, ShellExecuteW},
-        WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW, SW_SHOWNORMAL},
-    },
+    UI::Shell::{FOLDERID_RoamingAppData, SHGetKnownFolderPath},
 };
-use windows::core::{Error, HRESULT, PCWSTR, PWSTR, Result, w};
+use windows::core::{Error, HRESULT, PWSTR, Result};
 
-use crate::i18n::{Language, main_window_title, resolve_language};
+use crate::i18n::resolve_language;
 use crate::speech_bubble::{SpeechBubbleConfig, SpeechMessage};
 use crate::ui::theme::{Theme, resolve_theme};
 
@@ -177,41 +173,6 @@ fn speech_bubble_to_file(config: &SpeechBubbleConfig) -> SpeechBubbleFile {
     }
 }
 
-pub fn open_config_directory(hwnd: HWND) -> Result<()> {
-    let config_dir = ensure_config_directory()?;
-
-    let directory = wide_null(config_dir.as_os_str().to_string_lossy().as_ref());
-    let result = unsafe {
-        ShellExecuteW(
-            Some(hwnd),
-            w!("open"),
-            PCWSTR(directory.as_ptr()),
-            None,
-            None,
-            SW_SHOWNORMAL,
-        )
-    };
-    if (result.0 as usize) <= 32 {
-        return Err(Error::from_win32());
-    }
-
-    Ok(())
-}
-
-pub fn show_config_open_error(hwnd: HWND, error: &windows::core::Error, language: Language) {
-    let title = wide_null(main_window_title(language));
-    let message = wide_null(&error.to_string());
-
-    unsafe {
-        let _ = MessageBoxW(
-            Some(hwnd),
-            PCWSTR(message.as_ptr()),
-            PCWSTR(title.as_ptr()),
-            MB_OK | MB_ICONERROR,
-        );
-    }
-}
-
 fn ensure_config_directory() -> Result<PathBuf> {
     let appdata = roaming_appdata_dir()?;
     let config_dir = appdata.join(APP_DIRECTORY_NAME).join(APP_SUBDIRECTORY_NAME);
@@ -270,10 +231,6 @@ fn io_error_to_win_error(error: std::io::Error) -> Error {
         Some(code) => Error::new(HRESULT::from_win32(code as u32), error.to_string()),
         None => Error::new(windows::core::HRESULT(0x8000_4005u32 as i32), error.to_string()),
     }
-}
-
-fn wide_null(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain([0]).collect()
 }
 
 #[cfg(test)]

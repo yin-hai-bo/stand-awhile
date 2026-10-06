@@ -17,18 +17,16 @@ use windows::core::{Error, PCWSTR, Result};
 pub const WM_TRAYICON: u32 = WM_APP + 1;
 pub const TRAY_ICON_ID: u32 = 1;
 pub const TRAY_MENU_SHOW_ID: usize = 41001;
-pub const TRAY_MENU_OPEN_CONFIG_ID: usize = 41002;
-pub const TRAY_MENU_ABOUT_ID: usize = 41003;
-pub const TRAY_MENU_EXIT_ID: usize = 41004;
-pub const TRAY_MENU_START_ID: usize = 41005;
-pub const TRAY_MENU_SETTINGS_ID: usize = 41006;
+pub const TRAY_MENU_ABOUT_ID: usize = 41002;
+pub const TRAY_MENU_EXIT_ID: usize = 41003;
+pub const TRAY_MENU_START_ID: usize = 41004;
+pub const TRAY_MENU_SETTINGS_ID: usize = 41005;
 
 pub struct TrayIcon {
     icon: HICON,
     tooltip: String,
     start_menu_text: String,
     show_menu_text: String,
-    open_config_text: String,
     settings_text: String,
     about_text: String,
     exit_menu_text: String,
@@ -41,7 +39,6 @@ impl TrayIcon {
         tooltip: &str,
         start_menu_text: &str,
         show_menu_text: &str,
-        open_config_text: &str,
         settings_text: &str,
         about_text: &str,
         exit_menu_text: &str,
@@ -59,7 +56,6 @@ impl TrayIcon {
             tooltip: tooltip.to_owned(),
             start_menu_text: start_menu_text.to_owned(),
             show_menu_text: show_menu_text.to_owned(),
-            open_config_text: open_config_text.to_owned(),
             settings_text: settings_text.to_owned(),
             about_text: about_text.to_owned(),
             exit_menu_text: exit_menu_text.to_owned(),
@@ -79,7 +75,6 @@ impl TrayIcon {
         tooltip: &str,
         start_menu_text: &str,
         show_menu_text: &str,
-        open_config_text: &str,
         settings_text: &str,
         about_text: &str,
         exit_menu_text: &str,
@@ -87,7 +82,6 @@ impl TrayIcon {
         self.tooltip = tooltip.to_owned();
         self.start_menu_text = start_menu_text.to_owned();
         self.show_menu_text = show_menu_text.to_owned();
-        self.open_config_text = open_config_text.to_owned();
         self.settings_text = settings_text.to_owned();
         self.about_text = about_text.to_owned();
         self.exit_menu_text = exit_menu_text.to_owned();
@@ -133,7 +127,6 @@ impl TrayIcon {
     fn show_context_menu(&self, hwnd: HWND) -> Result<()> {
         let menu = unsafe { CreatePopupMenu()? };
         let show_text = wide_null(&self.show_menu_text);
-        let open_config_text = wide_null(&self.open_config_text);
         let settings_text = wide_null(&self.settings_text);
         let about_text = wide_null(&self.about_text);
         let exit_text = wide_null(&self.exit_menu_text);
@@ -147,12 +140,6 @@ impl TrayIcon {
             )?;
             AppendMenuW(menu, MF_STRING, TRAY_MENU_SHOW_ID, PCWSTR(show_text.as_ptr()))?;
             AppendMenuW(menu, MF_STRING, TRAY_MENU_SETTINGS_ID, PCWSTR(settings_text.as_ptr()))?;
-            AppendMenuW(
-                menu,
-                MF_STRING,
-                TRAY_MENU_OPEN_CONFIG_ID,
-                PCWSTR(open_config_text.as_ptr()),
-            )?;
             AppendMenuW(menu, MF_STRING, TRAY_MENU_ABOUT_ID, PCWSTR(about_text.as_ptr()))?;
             AppendMenuW(menu, MF_SEPARATOR, 0, None)?;
             AppendMenuW(menu, MF_STRING, TRAY_MENU_EXIT_ID, PCWSTR(exit_text.as_ptr()))?;
