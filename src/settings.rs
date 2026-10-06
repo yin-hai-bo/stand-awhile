@@ -5,7 +5,7 @@ use windows::{
         Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::Gdi::{
             CreateSolidBrush, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW, FillRect, HBRUSH, HDC,
-            HFONT, HGDIOBJ, SelectObject, SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
+            HFONT, HGDIOBJ, InvalidateRect, SelectObject, SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
         },
         UI::{
             Controls::{BST_CHECKED, DRAWITEMSTRUCT, ODS_SELECTED},
@@ -474,6 +474,34 @@ pub fn update_settings_panel_font(hwnd: HWND, dpi: u32) {
         set_font(*control, state.font);
     }
     layout_settings_panel(hwnd, dpi);
+}
+
+pub fn refresh_settings_panel_theme(hwnd: HWND, config: &Config) {
+    let Some(state) = state_mut(hwnd) else {
+        return;
+    };
+    let dark_mode = is_settings_dark_mode(config);
+    let background = if dark_mode {
+        COLORREF(0x00202020)
+    } else {
+        COLORREF(0x00F0F0F0)
+    };
+
+    state.dark_mode = dark_mode;
+    unsafe {
+        if !state.background_brush.is_invalid() {
+            let _ = DeleteObject(HGDIOBJ(state.background_brush.0));
+        }
+        if !state.control_brush.is_invalid() {
+            let _ = DeleteObject(HGDIOBJ(state.control_brush.0));
+        }
+        state.background_brush = CreateSolidBrush(background);
+        state.control_brush = CreateSolidBrush(background);
+        let _ = InvalidateRect(Some(hwnd), None, true);
+        for control in &state.font_controls {
+            let _ = InvalidateRect(Some(*control), None, true);
+        }
+    }
 }
 
 fn set_font(hwnd: HWND, font: Option<HFONT>) {

@@ -10,8 +10,8 @@ use crate::pet_window::{
 };
 use crate::settings::{
     SETTINGS_APPLIED_ID, SETTINGS_BUTTON_ID, SETTINGS_CHANGED_ID, SETTINGS_CLOSED_ID, create_settings_panel,
-    draw_settings_button, resize_settings_panel, save_settings_panel, set_settings_button_text,
-    update_settings_button_font, update_settings_panel_font,
+    draw_settings_button, refresh_settings_panel_theme, resize_settings_panel, save_settings_panel,
+    set_settings_button_text, update_settings_button_font, update_settings_panel_font,
 };
 use crate::timer_panel::resize_timer_panel;
 use crate::ui::font::common_gui_font;
@@ -681,6 +681,7 @@ fn apply_saved_settings(hwnd: HWND) {
         state.tray_when_close = config.tray_when_close;
         state.theme = config.theme();
         refresh_theme(hwnd, state.theme);
+        refresh_settings_panel_theme(state.settings_panel, &config);
     }
 }
 
