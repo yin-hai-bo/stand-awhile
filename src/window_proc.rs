@@ -6,13 +6,14 @@ use std::sync::{
 use crate::about::show_about_window;
 use crate::asset::CharacterCatalog;
 use crate::pet_window::{
-    PET_COMMAND_ACKNOWLEDGE, PET_COMMAND_EXIT, PET_COMMAND_SETTINGS, PET_COMMAND_SHOW_MAIN, PET_COMMAND_START,
-    PetWindow, WM_PET_COMMAND,
+    PET_COMMAND_ABOUT, PET_COMMAND_ACKNOWLEDGE, PET_COMMAND_EXIT, PET_COMMAND_SETTINGS, PET_COMMAND_SHOW_MAIN,
+    PET_COMMAND_START, PetWindow, WM_PET_COMMAND,
 };
 use crate::settings::{
-    SETTINGS_APPLIED_ID, SETTINGS_BUTTON_ID, SETTINGS_CHANGED_ID, SETTINGS_CLOSED_ID, create_settings_panel,
-    draw_settings_button, refresh_settings_panel_theme, resize_settings_panel, save_settings_panel,
-    set_settings_button_text, update_settings_button_font, update_settings_panel_font, update_settings_panel_language,
+    ABOUT_BUTTON_ID, SETTINGS_APPLIED_ID, SETTINGS_BUTTON_ID, SETTINGS_CHANGED_ID, SETTINGS_CLOSED_ID,
+    create_settings_panel, draw_settings_button, refresh_settings_panel_theme, resize_settings_panel,
+    save_settings_panel, set_settings_button_text, update_settings_button_font, update_settings_panel_font,
+    update_settings_panel_language,
 };
 use crate::timer_panel::resize_timer_panel;
 use crate::ui::font::common_gui_font;
@@ -66,6 +67,8 @@ pub struct WindowState {
     pub common_gui_font: Option<HFONT>,
     pub settings_button: HWND,
     pub settings_button_hovered: bool,
+    pub about_button: HWND,
+    pub about_button_hovered: bool,
     pub settings_panel: HWND,
     pub timer_panel: HWND,
     pub control_buttons: [HWND; 3],
@@ -148,6 +151,7 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
                 PET_COMMAND_ACKNOWLEDGE => acknowledge_pet(hwnd),
                 PET_COMMAND_START => activate_button(hwnd, ControlButton::Play),
                 PET_COMMAND_SETTINGS => open_settings(hwnd),
+                PET_COMMAND_ABOUT => open_about(hwnd),
                 PET_COMMAND_SHOW_MAIN => unsafe {
                     let _ = ShowWindow(hwnd, SW_SHOW);
                     let _ = SetForegroundWindow(hwnd);
@@ -163,6 +167,10 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
             match (wparam.0 & 0xFFFF) as usize {
                 SETTINGS_BUTTON_ID => {
                     toggle_settings(hwnd);
+                    return LRESULT(0);
+                }
+                ABOUT_BUTTON_ID => {
+                    open_about(hwnd);
                     return LRESULT(0);
                 }
                 SETTINGS_APPLIED_ID => {
@@ -197,13 +205,18 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
         WM_DRAWITEM => {
             if let Some(state) = window_state(hwnd) {
                 let item = unsafe { &*(lparam.0 as *const windows::Win32::UI::Controls::DRAWITEMSTRUCT) };
-                if item.CtlID as usize == SETTINGS_BUTTON_ID {
+                if matches!(item.CtlID as usize, SETTINGS_BUTTON_ID | ABOUT_BUTTON_ID) {
                     let dark_mode = match state.theme {
                         Theme::Dark => true,
                         Theme::Light => false,
                         Theme::System => crate::ui::theme::is_dark_mode().unwrap_or(false),
                     };
-                    draw_settings_button(item, dark_mode, state.settings_button_hovered, state.common_gui_font);
+                    let hovered = if item.CtlID as usize == ABOUT_BUTTON_ID {
+                        state.about_button_hovered
+                    } else {
+                        state.settings_button_hovered
+                    };
+                    draw_settings_button(item, dark_mode, hovered, state.common_gui_font);
                     return LRESULT(1);
                 }
             }
@@ -211,24 +224,24 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
         }
         WM_SETCURSOR => {
             if let Some(state) = window_state_mut(hwnd) {
-                let over_button = HWND(wparam.0 as _).0 == state.settings_button.0;
-                if over_button {
-                    if !state.settings_button_hovered {
-                        state.settings_button_hovered = true;
+                let cursor_window = HWND(wparam.0 as _);
+                for (button, hovered) in [
+                    (state.settings_button, &mut state.settings_button_hovered),
+                    (state.about_button, &mut state.about_button_hovered),
+                ] {
+                    let over_button = cursor_window == button;
+                    if *hovered != over_button {
+                        *hovered = over_button;
                         unsafe {
-                            let _ = InvalidateRect(Some(state.settings_button), None, false);
+                            let _ = InvalidateRect(Some(button), None, false);
                         }
                     }
+                }
+                if cursor_window == state.settings_button || cursor_window == state.about_button {
                     unsafe {
                         let _ = SetCursor(Some(LoadCursorW(None, IDC_HAND).unwrap_or_default()));
                     }
                     return LRESULT(1);
-                }
-                if state.settings_button_hovered {
-                    state.settings_button_hovered = false;
-                    unsafe {
-                        let _ = InvalidateRect(Some(state.settings_button), None, false);
-                    }
                 }
             }
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
@@ -281,6 +294,7 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
             }
             if let Some(state) = window_state(hwnd) {
                 update_settings_button_font(state.settings_button, state.common_gui_font);
+                update_settings_button_font(state.about_button, state.common_gui_font);
                 update_settings_panel_font(state.settings_panel, dpi);
             }
             let _ = layout_window_state(hwnd);
@@ -304,6 +318,7 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
                 refresh_theme(hwnd, state.theme);
                 unsafe {
                     let _ = InvalidateRect(Some(state.settings_button), None, false);
+                    let _ = InvalidateRect(Some(state.about_button), None, false);
                 }
             }
             if let Some(state) = window_state(hwnd) {
@@ -501,10 +516,19 @@ fn layout_settings_button(hwnd: HWND) {
     let height = scale(32);
     let right_margin = scale(24);
     let bottom_margin = scale(32);
+    let settings_left = rect.right - right_margin - width;
     unsafe {
         let _ = MoveWindow(
             state.settings_button,
-            rect.right - right_margin - width,
+            settings_left,
+            rect.bottom - bottom_margin - height,
+            width,
+            height,
+            true,
+        );
+        let _ = MoveWindow(
+            state.about_button,
+            settings_left - scale(24) - width,
             rect.bottom - bottom_margin - height,
             width,
             height,
@@ -561,14 +585,18 @@ fn handle_tray_menu_command(hwnd: HWND, wparam: WPARAM) -> bool {
             true
         }
         TRAY_MENU_ABOUT_ID => {
-            let (language, theme) = window_state(hwnd)
-                .map(|state| (state.language, state.theme))
-                .unwrap_or((Language::English, Theme::System));
-            let _ = show_about_window(hwnd, language, theme);
+            open_about(hwnd);
             true
         }
         _ => false,
     }
+}
+
+fn open_about(hwnd: HWND) {
+    let (language, theme) = window_state(hwnd)
+        .map(|state| (state.language, state.theme))
+        .unwrap_or((Language::English, Theme::System));
+    let _ = show_about_window(hwnd, language, theme);
 }
 
 fn open_settings(hwnd: HWND) {
@@ -581,6 +609,7 @@ fn open_settings(hwnd: HWND) {
     };
     unsafe {
         let _ = ShowWindow(state.timer_panel, SW_HIDE);
+        let _ = ShowWindow(state.about_button, SW_HIDE);
         let _ = SetWindowPos(
             state.settings_button,
             Some(HWND_TOP),
@@ -630,6 +659,7 @@ fn show_timer_panel(hwnd: HWND) {
         set_settings_button_text_for(hwnd, false);
         unsafe {
             let _ = ShowWindow(state.timer_panel, SW_SHOW);
+            let _ = ShowWindow(state.about_button, SW_SHOW);
         }
     }
 }
@@ -698,6 +728,8 @@ fn apply_saved_settings(hwnd: HWND) {
         update_settings_panel_language(state.settings_panel, language);
         update_settings_panel_font(state.settings_panel, dpi);
         update_settings_button_font(state.settings_button, font);
+        update_settings_button_font(state.about_button, font);
+        set_settings_button_text(state.about_button, crate::tray_menu_about_text(language));
         if let Some(animations) = state
             .character_catalog
             .get(&config.character)

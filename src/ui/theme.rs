@@ -114,11 +114,7 @@ pub fn apply_window_caption_color(hwnd: HWND, is_dark: bool, active: bool) {
 }
 
 pub fn paint_background(rect: &RECT, hdc: windows::Win32::Graphics::Gdi::HDC) -> Result<()> {
-    let color = if IS_DARK_MODE.load(Ordering::Relaxed) {
-        DARK_BACKGROUND
-    } else {
-        LIGHT_BACKGROUND
-    };
+    let color = current_background_color();
 
     unsafe {
         let brush = CreateSolidBrush(color);
@@ -142,6 +138,14 @@ pub fn current_text_color() -> COLORREF {
         DARK_TEXT
     } else {
         LIGHT_TEXT
+    }
+}
+
+pub fn current_background_color() -> COLORREF {
+    if is_dark_theme_active() {
+        DARK_BACKGROUND
+    } else {
+        LIGHT_BACKGROUND
     }
 }
 

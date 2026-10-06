@@ -21,7 +21,7 @@ mod window_proc;
 use crate::asset::load_character_catalog;
 use crate::config::Config;
 use crate::pet_window::PetWindow;
-use crate::settings::create_settings_button;
+use crate::settings::{create_about_button, create_settings_button};
 use crate::timer_panel::{create_timer_panel, register_timer_panel_class, resize_timer_panel};
 use windows::Win32::{
     Foundation::{HINSTANCE, RECT},
@@ -165,6 +165,7 @@ fn run() -> Result<()> {
     )?;
     let common_gui_font = common_gui_font(dpi, language == i18n::Language::Chinese);
     let settings_button = create_settings_button(hwnd, instance, settings_menu_text(language), common_gui_font);
+    let about_button = create_about_button(hwnd, instance, tray_menu_about_text(language), common_gui_font);
     attach_window_state(
         hwnd,
         WindowState {
@@ -178,6 +179,8 @@ fn run() -> Result<()> {
             common_gui_font,
             settings_button,
             settings_button_hovered: false,
+            about_button,
+            about_button_hovered: false,
             settings_panel: windows::Win32::Foundation::HWND::default(),
             timer_panel,
             control_buttons,

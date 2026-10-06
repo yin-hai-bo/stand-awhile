@@ -13,7 +13,7 @@ use windows::{
         UI::WindowsAndMessaging::{
             AppendMenuW, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
             DestroyMenu, DestroyWindow, GWLP_USERDATA, GetCursorPos, GetWindowLongPtrW, GetWindowRect, HTCLIENT,
-            HTTRANSPARENT, HWND_TOPMOST, IDC_ARROW, KillTimer, LoadCursorW, MF_STRING, RegisterClassExW,
+            HTTRANSPARENT, HWND_TOPMOST, IDC_ARROW, KillTimer, LoadCursorW, MF_SEPARATOR, MF_STRING, RegisterClassExW,
             SPI_GETWORKAREA, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE, SetTimer,
             SetWindowLongPtrW, SetWindowPos, ShowWindow, SystemParametersInfoW, TPM_LEFTALIGN, TPM_RETURNCMD,
             TPM_RIGHTBUTTON, TrackPopupMenuEx, WM_APP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE,
@@ -49,10 +49,12 @@ pub const PET_COMMAND_SHOW_MAIN: usize = 2;
 pub const PET_COMMAND_EXIT: usize = 3;
 pub const PET_COMMAND_START: usize = 4;
 pub const PET_COMMAND_SETTINGS: usize = 5;
+pub const PET_COMMAND_ABOUT: usize = 6;
 const PET_MENU_START: usize = 1;
 const PET_MENU_SHOW_MAIN: usize = 2;
 const PET_MENU_EXIT: usize = 3;
 const PET_MENU_SETTINGS: usize = 4;
+const PET_MENU_ABOUT: usize = 5;
 const HIDE_ANIMATION_DURATION_MS: u128 = 180;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,6 +82,7 @@ struct PetWindowState {
     start_menu_text: String,
     show_main_menu_text: String,
     settings_menu_text: String,
+    about_menu_text: String,
     exit_menu_text: String,
 }
 
@@ -176,10 +179,11 @@ impl PetWindow {
                 hide_animation: None,
                 next_walk_at: now + WALK_START_DELAY,
                 speech_bubble,
-                start_menu_text: "Start Timer".to_owned(),
-                show_main_menu_text: "Show Main Window".to_owned(),
+                start_menu_text: crate::tray_menu_start_text(Language::English).to_owned(),
+                show_main_menu_text: crate::tray_menu_show_text(Language::English).to_owned(),
                 settings_menu_text: settings_menu_text.to_owned(),
-                exit_menu_text: "Exit".to_owned(),
+                about_menu_text: crate::tray_menu_about_text(Language::English).to_owned(),
+                exit_menu_text: crate::tray_menu_exit_text(Language::English).to_owned(),
             },
         );
 
@@ -237,26 +241,11 @@ impl PetWindow {
 
     pub fn set_menu_texts(&self, language: Language) {
         if let Some(state) = state_mut(self.hwnd) {
-            state.start_menu_text = match language {
-                Language::Chinese => "开始计时",
-                Language::English => "Start Timer",
-            }
-            .to_owned();
-            state.show_main_menu_text = match language {
-                Language::Chinese => "显示主窗口",
-                Language::English => "Show Main Window",
-            }
-            .to_owned();
-            state.settings_menu_text = match language {
-                Language::Chinese => "设置",
-                Language::English => "Settings",
-            }
-            .to_owned();
-            state.exit_menu_text = match language {
-                Language::Chinese => "退出",
-                Language::English => "Exit",
-            }
-            .to_owned();
+            state.start_menu_text = crate::tray_menu_start_text(language).to_owned();
+            state.show_main_menu_text = crate::tray_menu_show_text(language).to_owned();
+            state.settings_menu_text = crate::settings_menu_text(language).to_owned();
+            state.about_menu_text = crate::tray_menu_about_text(language).to_owned();
+            state.exit_menu_text = crate::tray_menu_exit_text(language).to_owned();
         }
     }
 
@@ -640,10 +629,13 @@ fn show_context_menu(hwnd: HWND, state: &PetWindowState) -> Result<()> {
         let start_text = wide_null(&state.start_menu_text);
         let show_main_text = wide_null(&state.show_main_menu_text);
         let settings_text = wide_null(&state.settings_menu_text);
+        let about_text = wide_null(&state.about_menu_text);
         let exit_text = wide_null(&state.exit_menu_text);
         AppendMenuW(menu, MF_STRING, PET_MENU_START, PCWSTR(start_text.as_ptr()))?;
         AppendMenuW(menu, MF_STRING, PET_MENU_SHOW_MAIN, PCWSTR(show_main_text.as_ptr()))?;
         AppendMenuW(menu, MF_STRING, PET_MENU_SETTINGS, PCWSTR(settings_text.as_ptr()))?;
+        AppendMenuW(menu, MF_STRING, PET_MENU_ABOUT, PCWSTR(about_text.as_ptr()))?;
+        AppendMenuW(menu, MF_SEPARATOR, 0, None)?;
         AppendMenuW(menu, MF_STRING, PET_MENU_EXIT, PCWSTR(exit_text.as_ptr()))?;
     }
 
@@ -667,6 +659,7 @@ fn show_context_menu(hwnd: HWND, state: &PetWindowState) -> Result<()> {
         PET_MENU_START => post_pet_command(state.owner, PET_COMMAND_START),
         PET_MENU_SHOW_MAIN => post_pet_command(state.owner, PET_COMMAND_SHOW_MAIN),
         PET_MENU_SETTINGS => post_pet_command(state.owner, PET_COMMAND_SETTINGS),
+        PET_MENU_ABOUT => post_pet_command(state.owner, PET_COMMAND_ABOUT),
         PET_MENU_EXIT => post_pet_command(state.owner, PET_COMMAND_EXIT),
         _ => {}
     }

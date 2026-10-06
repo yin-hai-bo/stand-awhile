@@ -34,6 +34,7 @@ pub const SETTINGS_APPLIED_ID: usize = 5002;
 pub const SETTINGS_CHANGED_ID: usize = 5004;
 pub const SETTINGS_CLOSED_ID: usize = 5003;
 pub const SETTINGS_BUTTON_ID: usize = 1;
+pub const ABOUT_BUTTON_ID: usize = 2;
 const PERIOD_ID: usize = 10;
 const CHARACTER_CAT_ID: usize = 11;
 const CHARACTER_DOG_ID: usize = 12;
@@ -695,7 +696,15 @@ fn set_window_text(hwnd: HWND, text: &str) {
 }
 
 pub fn create_settings_button(parent: HWND, instance: HINSTANCE, text: &str, font: Option<HFONT>) -> HWND {
-    let button = create_button(parent, instance, SETTINGS_BUTTON_ID, text, 0, 0, 96, 32);
+    create_footer_button(parent, instance, SETTINGS_BUTTON_ID, text, font)
+}
+
+pub fn create_about_button(parent: HWND, instance: HINSTANCE, text: &str, font: Option<HFONT>) -> HWND {
+    create_footer_button(parent, instance, ABOUT_BUTTON_ID, text, font)
+}
+
+fn create_footer_button(parent: HWND, instance: HINSTANCE, id: usize, text: &str, font: Option<HFONT>) -> HWND {
+    let button = create_button(parent, instance, id, text, 0, 0, 96, 32);
     set_font(button, font);
     button
 }

@@ -1,23 +1,23 @@
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 use crate::ui::component::Component;
 use crate::ui::theme::{is_dark_theme_active, paint_background};
 use windows::Win32::{
     Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Gdi::{
-        BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, DEFAULT_CHARSET, DT_CALCRECT, DT_LEFT,
-        DT_SINGLELINE, DT_VCENTER, DrawTextW, EndPaint, FF_SWISS, GetDeviceCaps, HDC, HFONT, InvalidateRect,
-        LOGPIXELSY, OUT_DEFAULT_PRECIS, PAINTSTRUCT, SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
-        VARIABLE_PITCH,
+        BeginPaint, CreateFontIndirectW, DT_CALCRECT, DT_LEFT, DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW,
+        EndPaint, GetObjectW, HDC, HFONT, InvalidateRect, LOGFONTW, PAINTSTRUCT, SelectObject, SetBkMode, SetTextColor,
+        TRANSPARENT,
     },
     System::LibraryLoader::GetModuleHandleW,
     UI::Controls::WM_MOUSELEAVE,
+    UI::HiDpi::GetDpiForWindow,
     UI::Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent},
     UI::WindowsAndMessaging::{
-        CREATESTRUCTW, CreateWindowExW, DefWindowProcW, GWLP_USERDATA, GetClientRect, GetWindowLongPtrW, HCURSOR,
-        IDC_ARROW, IDC_HAND, LoadCursorW, MoveWindow, RegisterClassW, SetCursor, SetWindowLongPtrW, WINDOW_EX_STYLE,
-        WM_ERASEBKGND, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SETCURSOR, WNDCLASSW,
-        WS_CHILD, WS_VISIBLE,
+        CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetClientRect, GetWindowLongPtrW,
+        HCURSOR, IDC_ARROW, IDC_HAND, LoadCursorW, MoveWindow, RegisterClassW, SetCursor, SetWindowLongPtrW,
+        WINDOW_EX_STYLE, WM_ERASEBKGND, WM_GETFONT, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT,
+        WM_SETCURSOR, WNDCLASSW, WS_CHILD, WS_VISIBLE,
     },
 };
 use windows::core::{Error, Result, w};
@@ -29,7 +29,6 @@ const LINK_PADDING_BOTTOM: i32 = 10;
 const LINK_MEASURE_EXTRA_WIDTH: i32 = 4;
 const LINK_MEASURE_EXTRA_HEIGHT: i32 = 4;
 
-static LINK_FONT: Mutex<Option<usize>> = Mutex::new(None);
 static HYPER_LINK_TEXT_CLASS_REGISTRATION: OnceLock<std::result::Result<(), i32>> = OnceLock::new();
 
 type HyperLinkCallback = Box<dyn FnMut(HWND)>;
@@ -41,10 +40,20 @@ struct HyperLinkTextCreateParams {
 }
 
 struct HyperLinkTextState {
+    font: HFONT,
+    dpi: u32,
     text: String,
     hovered: bool,
     tracking_mouse: bool,
     on_click: HyperLinkCallback,
+}
+
+impl Drop for HyperLinkTextState {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = DeleteObject(self.font.into());
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -56,7 +65,14 @@ pub struct HyperLinkText {
 
 #[allow(dead_code)]
 impl HyperLinkText {
-    pub fn create<F>(parent: HWND, text: &str, on_click: F, layout: HyperLinkTextLayout) -> Result<Self>
+    pub fn create<F>(
+        parent: HWND,
+        text: &str,
+        base_font: HFONT,
+        dpi: u32,
+        on_click: F,
+        layout: HyperLinkTextLayout,
+    ) -> Result<Self>
     where
         F: FnMut(HWND) + 'static,
     {
@@ -94,11 +110,18 @@ impl HyperLinkText {
             }
         };
 
-        Ok(Self {
+        let link = Self {
             hwnd,
             text: text.to_owned(),
             layout,
-        })
+        };
+        if let Err(error) = link.set_font(base_font, dpi) {
+            unsafe {
+                let _ = DestroyWindow(hwnd);
+            }
+            return Err(error);
+        }
+        Ok(link)
     }
 
     pub fn from_hwnd(hwnd: HWND) -> Result<Self> {
@@ -151,14 +174,29 @@ impl HyperLinkText {
     }
 
     pub fn measure_text_rect(&self, hdc: HDC) -> Result<RECT> {
-        measure_text_rect(hdc, &self.text)
+        let state = hyper_link_state(self.hwnd).ok_or_else(Error::from_win32)?;
+        measure_text_rect(hdc, &self.text, state.font, state.dpi)
+    }
+
+    pub fn set_font(&self, base_font: HFONT, dpi: u32) -> Result<()> {
+        let state = hyper_link_state_mut(self.hwnd).ok_or_else(Error::from_win32)?;
+        let font = create_link_font(base_font)?;
+        let old_font = state.font;
+        state.font = font;
+        state.dpi = dpi;
+        unsafe {
+            let _ = DeleteObject(old_font.into());
+        }
+        self.invalidate();
+        Ok(())
     }
 
     pub fn window_size(&self, hdc: HDC) -> Result<(i32, i32)> {
+        let dpi = hyper_link_state(self.hwnd).ok_or_else(Error::from_win32)?.dpi;
         let rect = self.measure_text_rect(hdc)?;
         Ok((
-            rect.right - rect.left + LINK_PADDING_X * 2,
-            rect.bottom - rect.top + LINK_PADDING_TOP + LINK_PADDING_BOTTOM,
+            rect.right - rect.left + crate::scale_dimension(LINK_PADDING_X * 2, dpi),
+            rect.bottom - rect.top + crate::scale_dimension(LINK_PADDING_TOP + LINK_PADDING_BOTTOM, dpi),
         ))
     }
 }
@@ -217,6 +255,8 @@ unsafe extern "system" fn hyper_link_text_window_proc(hwnd: HWND, msg: u32, wpar
 
             let params = unsafe { Box::from_raw(raw_params) };
             let state = Box::new(HyperLinkTextState {
+                font: HFONT::default(),
+                dpi: unsafe { GetDpiForWindow(create.hwndParent) }.max(96),
                 text: params.text,
                 hovered: false,
                 tracking_mouse: false,
@@ -239,6 +279,7 @@ unsafe extern "system" fn hyper_link_text_window_proc(hwnd: HWND, msg: u32, wpar
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
+        WM_GETFONT => LRESULT(hyper_link_state(hwnd).map(|state| state.font.0 as isize).unwrap_or(0)),
         WM_MOUSEMOVE => {
             if let Some(state) = hyper_link_state_mut(hwnd) {
                 if !state.tracking_mouse {
@@ -307,8 +348,7 @@ fn draw_hyper_link_text(hwnd: HWND, hdc: HDC, hovered: bool) -> Result<()> {
     let state = hyper_link_state(hwnd).ok_or_else(Error::from_win32)?;
     let mut text = wide_text(&state.text);
     let mut text_rect = client_rect(hwnd)?;
-    let font = get_link_font(hdc)?;
-    let old_font = unsafe { SelectObject(hdc, font.into()) };
+    let old_font = unsafe { SelectObject(hdc, state.font.into()) };
 
     unsafe {
         let _ = SetBkMode(hdc, TRANSPARENT);
@@ -331,9 +371,8 @@ fn client_rect(hwnd: HWND) -> Result<RECT> {
     Ok(rect)
 }
 
-fn measure_text_rect(hdc: HDC, text: &str) -> Result<RECT> {
+fn measure_text_rect(hdc: HDC, text: &str, font: HFONT, dpi: u32) -> Result<RECT> {
     let mut text = wide_text(text);
-    let font = get_link_font(hdc)?;
     let old_font = unsafe { SelectObject(hdc, font.into()) };
     let mut measured = RECT::default();
 
@@ -347,52 +386,32 @@ fn measure_text_rect(hdc: HDC, text: &str) -> Result<RECT> {
         let _ = SelectObject(hdc, old_font);
     }
 
-    measured.right += LINK_MEASURE_EXTRA_WIDTH;
-    measured.bottom += LINK_MEASURE_EXTRA_HEIGHT;
+    measured.right += crate::scale_dimension(LINK_MEASURE_EXTRA_WIDTH, dpi);
+    measured.bottom += crate::scale_dimension(LINK_MEASURE_EXTRA_HEIGHT, dpi);
 
     Ok(measured)
 }
 
-fn get_link_font(hdc: HDC) -> Result<HFONT> {
-    let mut cached_font = LINK_FONT.lock().expect("hyper link text font mutex poisoned");
-
-    if let Some(raw_font) = *cached_font {
-        return Ok(HFONT(raw_font as _));
-    }
-
-    let font = create_link_font(hdc);
-    if font.is_invalid() {
+fn create_link_font(base_font: HFONT) -> Result<HFONT> {
+    let mut font = LOGFONTW::default();
+    if unsafe {
+        GetObjectW(
+            base_font.into(),
+            std::mem::size_of::<LOGFONTW>() as i32,
+            Some((&mut font as *mut LOGFONTW).cast()),
+        )
+    } == 0
+    {
         return Err(Error::from_win32());
     }
-
-    *cached_font = Some(font.0 as usize);
-    Ok(font)
-}
-
-fn create_link_font(hdc: HDC) -> HFONT {
-    let dpi_y = unsafe { GetDeviceCaps(Some(hdc), LOGPIXELSY) };
-    let font_height = -(11 * dpi_y / 72);
-
-    unsafe {
-        CreateFontW(
-            font_height,
-            0,
-            0,
-            0,
-            400,
-            0,
-            1,
-            0,
-            DEFAULT_CHARSET,
-            OUT_DEFAULT_PRECIS,
-            CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY,
-            (VARIABLE_PITCH.0 | FF_SWISS.0) as u32,
-            w!("Segoe UI"),
-        )
+    font.lfUnderline = 1;
+    let handle = unsafe { CreateFontIndirectW(&font) };
+    if handle.is_invalid() {
+        Err(Error::from_win32())
+    } else {
+        Ok(handle)
     }
 }
-
 fn hyper_link_state(hwnd: HWND) -> Option<&'static HyperLinkTextState> {
     let raw = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const HyperLinkTextState;
     unsafe { raw.as_ref() }
