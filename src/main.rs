@@ -255,35 +255,35 @@ fn wide_null(value: &str) -> Vec<u16> {
     value.encode_utf16().chain([0]).collect()
 }
 
-fn tray_menu_show_text(language: i18n::Language) -> &'static str {
+pub(crate) fn tray_menu_show_text(language: i18n::Language) -> &'static str {
     match language {
         i18n::Language::Chinese => "显示主窗口",
         i18n::Language::English => "Show main window",
     }
 }
 
-fn tray_menu_start_text(language: i18n::Language) -> &'static str {
+pub(crate) fn tray_menu_start_text(language: i18n::Language) -> &'static str {
     match language {
         i18n::Language::Chinese => "开始计时",
         i18n::Language::English => "Start timer",
     }
 }
 
-fn tray_menu_exit_text(language: i18n::Language) -> &'static str {
+pub(crate) fn tray_menu_exit_text(language: i18n::Language) -> &'static str {
     match language {
         i18n::Language::Chinese => "退出",
         i18n::Language::English => "Exit",
     }
 }
 
-fn tray_menu_open_config_text(language: i18n::Language) -> &'static str {
+pub(crate) fn tray_menu_open_config_text(language: i18n::Language) -> &'static str {
     match language {
         i18n::Language::Chinese => "打开配置目录",
         i18n::Language::English => "Open config folder",
     }
 }
 
-fn tray_menu_about_text(language: i18n::Language) -> &'static str {
+pub(crate) fn tray_menu_about_text(language: i18n::Language) -> &'static str {
     match language {
         i18n::Language::Chinese => "关于",
         i18n::Language::English => "About",

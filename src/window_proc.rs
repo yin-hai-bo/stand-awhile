@@ -12,7 +12,7 @@ use crate::pet_window::{
 use crate::settings::{
     SETTINGS_APPLIED_ID, SETTINGS_BUTTON_ID, SETTINGS_CHANGED_ID, SETTINGS_CLOSED_ID, create_settings_panel,
     draw_settings_button, refresh_settings_panel_theme, resize_settings_panel, save_settings_panel,
-    set_settings_button_text, update_settings_button_font, update_settings_panel_font,
+    set_settings_button_text, update_settings_button_font, update_settings_panel_font, update_settings_panel_language,
 };
 use crate::timer_panel::resize_timer_panel;
 use crate::ui::font::common_gui_font;
@@ -41,8 +41,8 @@ use windows::Win32::{
         DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetClientRect, GetWindowLongPtrW, HWND_TOP, IDC_HAND,
         IsDialogMessageW, IsWindow, IsWindowVisible, KillTimer, LoadCursorW, MSG, MoveWindow, PostQuitMessage, SW_HIDE,
         SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetCursor, SetForegroundWindow, SetTimer,
-        SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM,
-        WM_NCDESTROY, WM_PAINT, WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE, WM_THEMECHANGED, WM_TIMER,
+        SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_DPICHANGED,
+        WM_DRAWITEM, WM_NCDESTROY, WM_PAINT, WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE, WM_THEMECHANGED, WM_TIMER,
     },
 };
 
@@ -679,11 +679,37 @@ fn apply_saved_settings(hwnd: HWND) {
         return;
     };
     set_initial_remaining_seconds(config.period);
+    let language = config.language();
+    let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
     if let Some(state) = window_state_mut(hwnd) {
+        state.language = language;
         state.tray_when_close = config.tray_when_close;
         state.theme = config.theme();
         refresh_theme(hwnd, state.theme);
         refresh_settings_panel_theme(state.settings_panel, &config);
+        let font = common_gui_font(dpi, language == Language::Chinese);
+        state.common_gui_font = font;
+        let _ = state.tray_icon.update_language(
+            hwnd,
+            crate::i18n::main_window_title(language),
+            crate::tray_menu_start_text(language),
+            crate::tray_menu_show_text(language),
+            crate::tray_menu_open_config_text(language),
+            settings_menu_text(language),
+            crate::tray_menu_about_text(language),
+            crate::tray_menu_exit_text(language),
+        );
+        state.pet_window.set_settings_menu_text(settings_menu_text(language));
+        unsafe {
+            let title = crate::i18n::main_window_title(language)
+                .encode_utf16()
+                .chain([0])
+                .collect::<Vec<_>>();
+            let _ = SetWindowTextW(hwnd, windows::core::PCWSTR(title.as_ptr()));
+        }
+        update_settings_panel_language(state.settings_panel, language);
+        update_settings_panel_font(state.settings_panel, dpi);
+        update_settings_button_font(state.settings_button, font);
         if let Some(animations) = state
             .character_catalog
             .get(&config.character)
@@ -692,6 +718,10 @@ fn apply_saved_settings(hwnd: HWND) {
             let _ = state.pet_window.set_animations(animations.clone());
         }
     }
+    let settings_visible = window_state(hwnd)
+        .map(|state| unsafe { IsWindowVisible(state.settings_panel).as_bool() })
+        .unwrap_or(false);
+    set_settings_button_text_for(hwnd, settings_visible);
 }
 
 fn settings_menu_text(language: Language) -> &'static str {

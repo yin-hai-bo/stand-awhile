@@ -228,6 +228,12 @@ impl PetWindow {
         }
     }
 
+    pub fn set_settings_menu_text(&self, text: &str) {
+        if let Some(state) = state_mut(self.hwnd) {
+            state.settings_menu_text = text.to_owned();
+        }
+    }
+
     pub fn set_animations(&self, animations: CharacterAnimations) -> Result<()> {
         let state = state_mut(self.hwnd).ok_or_else(Error::from_win32)?;
         let (width, height) = {

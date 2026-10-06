@@ -424,8 +424,20 @@ fn create_controls(hwnd: HWND, state: &mut SettingsState) {
         80,
     );
     state.character = [
-        create_radio(hwnd, state.instance, CHARACTER_CAT_ID, "cat", true),
-        create_radio(hwnd, state.instance, CHARACTER_DOG_ID, "dog", false),
+        create_radio(
+            hwnd,
+            state.instance,
+            CHARACTER_CAT_ID,
+            if chinese { "小猫" } else { "cat" },
+            true,
+        ),
+        create_radio(
+            hwnd,
+            state.instance,
+            CHARACTER_DOG_ID,
+            if chinese { "小狗" } else { "dog" },
+            false,
+        ),
     ];
     state.language = [
         create_radio(
@@ -493,7 +505,7 @@ fn create_controls(hwnd: HWND, state: &mut SettingsState) {
         84,
     );
     font_controls.push(label);
-    let label = create_static(hwnd, state.instance, if chinese { "Pet：" } else { "Pet:" }, 72, 132);
+    let label = create_static(hwnd, state.instance, if chinese { "桌宠：" } else { "Pet:" }, 72, 132);
     font_controls.push(label);
     let label = create_static(
         hwnd,
@@ -555,6 +567,60 @@ pub fn update_settings_panel_font(hwnd: HWND, dpi: u32) {
     layout_settings_panel(hwnd, dpi);
 }
 
+pub fn update_settings_panel_language(hwnd: HWND, language: crate::i18n::Language) {
+    let Some(state) = state_mut(hwnd) else {
+        return;
+    };
+    let chinese = language == crate::i18n::Language::Chinese;
+    let titles = [
+        if chinese {
+            "倒计时秒数："
+        } else {
+            "Countdown seconds:"
+        },
+        if chinese { "桌宠：" } else { "Pet:" },
+        if chinese { "语言：" } else { "Language:" },
+        if chinese { "主题：" } else { "Theme:" },
+        if chinese {
+            "关闭主窗口行为："
+        } else {
+            "Close behavior:"
+        },
+    ];
+    for (control, text) in state.font_controls[..5].iter().zip(titles) {
+        set_control_text(*control, text);
+    }
+    let language_options = if chinese {
+        ["自动", "中文", "English"]
+    } else {
+        ["Auto", "中文", "English"]
+    };
+    for (control, text) in state.language.iter().zip(language_options) {
+        set_control_text(*control, text);
+    }
+    let character_options = if chinese { ["小猫", "小狗"] } else { ["cat", "dog"] };
+    for (control, text) in state.character.iter().zip(character_options) {
+        set_control_text(*control, text);
+    }
+    let theme_options = if chinese {
+        ["系统", "浅色", "深色"]
+    } else {
+        ["System", "Light", "Dark"]
+    };
+    for (control, text) in state.theme.iter().zip(theme_options) {
+        set_control_text(*control, text);
+    }
+    let close_options = if chinese {
+        ["退出程序", "缩小为托盘图标"]
+    } else {
+        ["Exit program", "Minimize to tray"]
+    };
+    for (control, text) in state.close_behavior.iter().zip(close_options) {
+        set_control_text(*control, text);
+    }
+    set_window_text(hwnd, if chinese { "设置" } else { "Settings" });
+}
+
 pub fn refresh_settings_panel_theme(hwnd: HWND, config: &Config) {
     let Some(state) = state_mut(hwnd) else {
         return;
@@ -614,6 +680,17 @@ fn set_font(hwnd: HWND, font: Option<HFONT>) {
         unsafe {
             let _ = SendMessageW(hwnd, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
         }
+    }
+}
+
+fn set_control_text(hwnd: HWND, text: &str) {
+    set_window_text(hwnd, text);
+}
+
+fn set_window_text(hwnd: HWND, text: &str) {
+    let value = wide(text);
+    unsafe {
+        let _ = SetWindowTextW(hwnd, PCWSTR(value.as_ptr()));
     }
 }
 

@@ -2,8 +2,8 @@ use windows::Win32::{
     Foundation::{HWND, LPARAM, POINT, WPARAM},
     UI::{
         Shell::{
-            NIF_ICON, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_SETVERSION, NOTIFYICON_VERSION_4,
-            NOTIFYICONDATAW, Shell_NotifyIconW,
+            NIF_ICON, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION,
+            NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW,
         },
         WindowsAndMessaging::{
             AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, HICON, MF_SEPARATOR, MF_STRING, SW_RESTORE,
@@ -24,6 +24,7 @@ pub const TRAY_MENU_START_ID: usize = 41005;
 pub const TRAY_MENU_SETTINGS_ID: usize = 41006;
 
 pub struct TrayIcon {
+    icon: HICON,
     tooltip: String,
     start_menu_text: String,
     show_menu_text: String,
@@ -54,6 +55,7 @@ impl TrayIcon {
         set_notify_icon_version(hwnd, tooltip)?;
 
         Ok(Self {
+            icon,
             tooltip: tooltip.to_owned(),
             start_menu_text: start_menu_text.to_owned(),
             show_menu_text: show_menu_text.to_owned(),
@@ -65,10 +67,37 @@ impl TrayIcon {
     }
 
     pub fn delete(&self, hwnd: HWND) {
-        let icon_data = notify_icon_data(hwnd, HICON::default(), &self.tooltip);
+        let icon_data = notify_icon_data(hwnd, self.icon, &self.tooltip);
         unsafe {
             let _ = Shell_NotifyIconW(NIM_DELETE, &icon_data);
         }
+    }
+
+    pub fn update_language(
+        &mut self,
+        hwnd: HWND,
+        tooltip: &str,
+        start_menu_text: &str,
+        show_menu_text: &str,
+        open_config_text: &str,
+        settings_text: &str,
+        about_text: &str,
+        exit_menu_text: &str,
+    ) -> Result<()> {
+        self.tooltip = tooltip.to_owned();
+        self.start_menu_text = start_menu_text.to_owned();
+        self.show_menu_text = show_menu_text.to_owned();
+        self.open_config_text = open_config_text.to_owned();
+        self.settings_text = settings_text.to_owned();
+        self.about_text = about_text.to_owned();
+        self.exit_menu_text = exit_menu_text.to_owned();
+        let icon_data = notify_icon_data(hwnd, self.icon, &self.tooltip);
+        unsafe {
+            if !Shell_NotifyIconW(NIM_MODIFY, &icon_data).as_bool() {
+                return Err(Error::from_win32());
+            }
+        }
+        Ok(())
     }
 
     pub fn handle_callback(&self, hwnd: HWND, lparam: LPARAM) -> Result<bool> {
