@@ -15,8 +15,8 @@ surface, not a second reminder channel.
 
 The product direction is an animated desktop reminder. Keeping both a Pet and
 Toast for the same event would produce duplicate notifications and make the
-acknowledgement behavior ambiguous. The current Toast module is only used for
-timer reminders, so removing it does not affect another feature.
+acknowledgement behavior ambiguous. The former Toast module served timer
+reminders and has been removed from the project.
 
 ## Consequences
 

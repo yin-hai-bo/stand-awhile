@@ -1,5 +1,26 @@
 # Project context
 
+## Implementation map
+
+The application is Rust with native Win32 GUI APIs. Startup asset decoding,
+window messages, animation updates, and rendering run on the main thread.
+
+| Module | Responsibility |
+| --- | --- |
+| `main.rs` | DPI awareness, configuration, GDI+ startup, window creation, message loop |
+| `window_proc.rs` | Countdown state, Pet commands, settings application, main window lifetime |
+| `settings.rs`, `config.rs` | Settings UI and UTF-8 JSON persistence in Roaming AppData |
+| `asset.rs`, `build.rs` | Embedded manifest and PNGs; in-memory GDI+ decoding and character catalog |
+| `animation.rs` | Pure `Instant`-driven frame selection, looping, pause/resume, completion |
+| `pet_window.rs` | Pet window, clip transitions, entrance/exit motion, dragging, alpha hit testing, position persistence |
+| `render.rs`, `gdi/` | CPU pixel surfaces, DPI resampling, reusable DIBs, `UpdateLayeredWindow` |
+| `speech_bubble.rs`, `speech_bubble_window.rs` | Fixed message cycle and localized bubble window |
+| `timer_panel.rs`, `tray_icon.rs`, `about.rs`, `ui/` | Countdown display, tray controls, About, Win32 controls and drawing |
+
+The main countdown uses a one-second Win32 timer to decrement its remaining
+seconds. Pet animation uses a 16 ms window timer to schedule updates and
+`Instant` to select frames. There is no asset worker or GPU renderer.
+
 ## Domain glossary
 
 ### Pet
@@ -16,7 +37,8 @@ window.
 ### Animation clip
 
 A named ordered sequence of frames with a frame duration and loop mode. The
-current MVP uses the `idle`, `jump`, and later `walk` clips from the cat asset.
+runtime uses `idle`, `walk`, and `jump` for either Cat or Dog. All PNG frames
+are embedded, while the runtime catalog decodes these three clips per character.
 
 ### Animation player
 
@@ -27,20 +49,24 @@ HWNDs, files, timers, or rendering.
 ### Reminder animation
 
 The one-shot `jump` clip played when the standing timer reaches zero. After it
-finishes, the Pet returns to `idle` until the user clicks it.
+finishes and the entrance motion completes, the Pet switches to `walk`.
+After a 500 ms delay, its fixed localized bubble appears for 5 seconds and
+then stays hidden for 10 seconds, repeating until interrupted. Bubble
+visibility selects `idle`; the hidden phase selects `walk`.
 
 ### Renderer
 
 The component that turns a renderable frame into pixels submitted to the Pet
-window. The MVP renderer uses CPU BGRA buffers and `UpdateLayeredWindow`.
+window. The renderer uses CPU premultiplied BGRA buffers and `UpdateLayeredWindow`.
 
 ### Window interaction
 
-User input delivered to the Pet window. MVP interaction consists of dragging
-with the left button, clicking to acknowledge a reminder, and a small
-right-click context menu.
+User input delivered to the Pet window: left-button dragging, clicking to
+start the next countdown, and a right-click menu with timer, main-window,
+Settings, About, and Exit commands. Losing capture cancels the drag.
 
 ### Acknowledge
 
-The user action of clicking the Pet after a reminder. Acknowledging hides the
-Pet and starts the next timer interval.
+The user action of clicking the visible Pet. Acknowledging hides the Pet
+with its exit animation and starts a full timer interval. This also works
+for the initially visible Pet before the first countdown.

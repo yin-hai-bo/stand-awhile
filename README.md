@@ -7,7 +7,7 @@
 
 > “Stand awhile, breathe, and stretch.”
 
-Designed to be unobtrusive and minimal, it helps reduce the health risks of prolonged sitting without interrupting your workflow.
+It reminds you to take a movement break without taking focus away from your work.
 
 ---
 
@@ -15,18 +15,21 @@ Designed to be unobtrusive and minimal, it helps reduce the health risks of prol
 
 - ⏱ **Smart Timer**: Default 20-minute interval (fully configurable)
 - 🐾 **Desktop Pet Reminders**: Show a transparent animated Pet when the timer completes
-- 🪶 **Lightweight**: Runs quietly in the system tray with minimal memory usage
+- 🪶 **Tray Controls**: Start the timer, show the main window, open Settings or About, and exit
 - 🛠 **Customizable**:
   - Adjust reminder intervals
-  - Choose the Pet character (`cat` or `dog`) in the configuration file
+  - Choose the Pet character (`cat` or `dog`)
   - Choose the application language and theme
+  - Choose whether closing the main window exits or hides it to the tray
 - 🖥 **Native Experience**: Pure Windows application, no browser dependencies
 
 ---
 
 ## 📸 Screenshot
 
-![StandAwhile Screenshot](docs/images/screenshot.png)
+![StandAwhile Screenshot](docs/images/screenshot.jpg)
+
+<img src="docs/images/settings.jpg" style="width:auto; max-width:none;">
 
 ---
 
@@ -34,9 +37,9 @@ Designed to be unobtrusive and minimal, it helps reduce the health risks of prol
 
 ### Download & Run
 1. Go to the [Releases](https://github.com/yin-hai-bo/stand-awhile/releases) page
-2. Download the latest `StandAwhile.zip`
-3. Extract and run `StandAwhile.exe`
-4. The app will minimize to the system tray
+2. Download the executable (extract it first if distributed in an archive)
+3. Run `stand-awhile.exe`
+4. The main window and Pet appear; click Play or the Pet to start the countdown
 
 The executable includes the Cat and Dog images and animation manifest. You can
 distribute the EXE alone; no external `assets` folder is required at runtime.
@@ -54,9 +57,31 @@ visible, and returns to Walk when the bubble disappears.
 When a countdown ends, the Pet flies in from the nearest top or bottom screen
 edge with Jump, then switches to Walk before the bubble cycle starts.
 
-The configuration file is available from the application's **Open config folder**
-link or tray menu. Set `"character": "dog"` to use the Dog Pet; the default is
-`"cat"`.
+Pause stops the countdown and hides the Pet. Reset restores the configured
+interval, stops the countdown, and keeps the Pet hidden. Closing the main window
+exits by default. Enable **Minimize to tray** in Settings to hide only the main
+window; the countdown and any visible Pet reminder continue.
+
+### Settings and Configuration
+
+Open **Settings** from the main window, tray menu, or Pet menu. Character,
+language, theme, and close behavior changes are saved and applied immediately.
+The interval is measured in seconds (at least 1 in Settings) and is saved when
+you click **Back**. Changing the interval replaces the remaining countdown;
+changing other settings preserves it.
+
+The UTF-8 configuration file is `%APPDATA%\yhb\stand-awhile\config.json`.
+It is created on first launch. For manual changes, close the application, edit
+the file, then restart. Omitted or null fields use the defaults below.
+
+| Field | Default | Values / behavior |
+| --- | --- | --- |
+| `period` | `1200` | Countdown interval in seconds |
+| `character` | `"cat"` | `"cat"` or `"dog"`; unknown characters fall back to Cat |
+| `language` | `"auto"` | `"auto"`, `"zh"`, or `"en"`; Auto follows the Windows UI language, using Chinese for Chinese locales and English otherwise |
+| `theme` | `"system"` | `"system"`, `"light"`, or `"dark"` |
+| `tray_when_close` | `false` | `true` hides the main window on close; `false` exits |
+| `pet_position` | `null` | Position saved automatically after dragging |
 
 ### Build from Source
 
@@ -86,9 +111,17 @@ The release executable will be generated at:
 target/release/stand-awhile.exe
 ```
 
+Release builds require a clean Git working tree. For development with local
+changes, use `cargo build` or `cargo run`. Image and manifest changes require a
+rebuild because they are embedded in the executable.
+
 For development checks, run:
 
 ```powershell
-cargo fmt
+cargo fmt -- --check
 cargo test
+cargo build
 ```
+
+See [Pet verification](docs/desktop-pet-verification.md) for Windows smoke checks
+and [Project context](CONTEXT.md) for the implementation's module boundaries.
