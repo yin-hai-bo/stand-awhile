@@ -482,9 +482,9 @@ unsafe extern "system" fn pet_window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
                     SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                 }
             }
-            unsafe { DefWindowProcW(hwnd, msg, WPARAM(0), lparam) }
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
-        _ => unsafe { DefWindowProcW(hwnd, msg, WPARAM(0), lparam) },
+        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
 }
 
@@ -842,6 +842,49 @@ mod tests {
         ActiveClip, PlaybackState, clamp_drag_position, clamp_position, hide_target_y, movement_exceeded,
         should_return_to_idle,
     };
+
+    #[test]
+    fn pet_replaces_wait_cursor_with_arrow() {
+        use windows::Win32::{
+            Foundation::{HINSTANCE, LPARAM, WPARAM},
+            System::LibraryLoader::GetModuleHandleW,
+            UI::WindowsAndMessaging::{
+                CreateWindowExW, DestroyWindow, GetCursor, HTCLIENT, IDC_ARROW, IDC_WAIT, LoadCursorW, SendMessageW,
+                SetCursor, WM_MOUSEMOVE, WM_SETCURSOR, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
+            },
+        };
+        unsafe {
+            let instance: HINSTANCE = GetModuleHandleW(None).unwrap().into();
+            super::register_class(instance).unwrap();
+            let hwnd = CreateWindowExW(
+                WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                super::PET_WINDOW_CLASS,
+                windows::core::w!(""),
+                WS_POPUP,
+                0,
+                0,
+                100,
+                100,
+                None,
+                None,
+                Some(instance),
+                None,
+            )
+            .unwrap();
+            let arrow = LoadCursorW(None, IDC_ARROW).unwrap();
+            let previous = SetCursor(Some(LoadCursorW(None, IDC_WAIT).unwrap()));
+            SendMessageW(
+                hwnd,
+                WM_SETCURSOR,
+                Some(WPARAM(hwnd.0 as usize)),
+                Some(LPARAM(HTCLIENT as isize | ((WM_MOUSEMOVE as isize) << 16))),
+            );
+            let actual = GetCursor();
+            SetCursor(Some(previous));
+            DestroyWindow(hwnd).unwrap();
+            assert_eq!(actual, arrow);
+        }
+    }
 
     #[test]
     fn finished_jump_returns_to_idle() {

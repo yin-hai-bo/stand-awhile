@@ -3,8 +3,8 @@ use windows::{
         Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT},
         UI::WindowsAndMessaging::{
-            CreateWindowExW, DefWindowProcW, GWLP_USERDATA, GetClientRect, RegisterClassW, SetWindowLongPtrW,
-            WM_COMMAND, WM_ERASEBKGND, WM_NCCREATE, WM_PAINT, WNDCLASSW, WS_CHILD, WS_VISIBLE,
+            CreateWindowExW, DefWindowProcW, GWLP_USERDATA, GetClientRect, IDC_ARROW, LoadCursorW, RegisterClassW,
+            SetWindowLongPtrW, WM_COMMAND, WM_ERASEBKGND, WM_NCCREATE, WM_PAINT, WNDCLASSW, WS_CHILD, WS_VISIBLE,
         },
     },
     core::{Error, Result, w},
@@ -19,6 +19,7 @@ pub fn register_timer_panel_class(instance: HINSTANCE) -> Result<()> {
     let class = WNDCLASSW {
         lpfnWndProc: Some(timer_panel_proc),
         hInstance: instance,
+        hCursor: unsafe { LoadCursorW(None, IDC_ARROW)? },
         lpszClassName: TIMER_PANEL_CLASS,
         ..Default::default()
     };
@@ -92,5 +93,70 @@ unsafe extern "system" fn timer_panel_proc(hwnd: HWND, msg: u32, wparam: WPARAM,
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::{
+        System::LibraryLoader::GetModuleHandleW,
+        UI::WindowsAndMessaging::{
+            DestroyWindow, GetCursor, HTCLIENT, IDC_ARROW, IDC_HAND, IDC_WAIT, LoadCursorW, SendMessageW, SetCursor,
+            WM_MOUSEMOVE, WM_SETCURSOR,
+        },
+    };
+
+    unsafe extern "system" fn parent_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+    }
+
+    #[test]
+    fn timer_panel_replaces_stale_cursor_with_arrow() {
+        unsafe {
+            let instance: HINSTANCE = GetModuleHandleW(None).unwrap().into();
+            let parent_class = w!("StandAwhileCursorTestParent");
+            let arrow = LoadCursorW(None, IDC_ARROW).unwrap();
+            let class = WNDCLASSW {
+                lpfnWndProc: Some(parent_proc),
+                hInstance: instance,
+                hCursor: arrow,
+                lpszClassName: parent_class,
+                ..Default::default()
+            };
+            assert_ne!(RegisterClassW(&class), 0);
+            register_timer_panel_class(instance).unwrap();
+            let parent = CreateWindowExW(
+                Default::default(),
+                parent_class,
+                w!(""),
+                Default::default(),
+                0,
+                0,
+                100,
+                100,
+                None,
+                None,
+                Some(instance),
+                None,
+            )
+            .unwrap();
+            let panel = create_timer_panel(parent, instance).unwrap();
+            let previous_cursor = GetCursor();
+            let mut actual_cursors = Vec::new();
+            for initial_cursor in [IDC_WAIT, IDC_HAND] {
+                SetCursor(Some(LoadCursorW(None, initial_cursor).unwrap()));
+                SendMessageW(
+                    panel,
+                    WM_SETCURSOR,
+                    Some(WPARAM(panel.0 as usize)),
+                    Some(LPARAM(HTCLIENT as isize | ((WM_MOUSEMOVE as isize) << 16))),
+                );
+                actual_cursors.push(GetCursor());
+            }
+            SetCursor(Some(previous_cursor));
+            DestroyWindow(parent).unwrap();
+            assert_eq!(actual_cursors, vec![arrow, arrow]);
+        }
     }
 }
