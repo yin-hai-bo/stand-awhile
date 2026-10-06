@@ -31,6 +31,13 @@ pub fn main_window_title(language: Language) -> &'static str {
     }
 }
 
+pub fn pet_reminder_text(language: Language) -> &'static str {
+    match language {
+        Language::Chinese => "该站起来活动一下啦！\n单击桌宠，开始新一轮倒计时",
+        Language::English => "Time to stand up and stretch!\nClick the pet to start a new countdown.",
+    }
+}
+
 fn detect_language_from_lang_id(lang_id: u16) -> Language {
     let primary_language = lang_id & 0x03ff;
     if primary_language == LANG_CHINESE_PRIMARY_ID {

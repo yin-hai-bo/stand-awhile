@@ -19,7 +19,6 @@ Designed to be unobtrusive and minimal, it helps reduce the health risks of prol
 - 🛠 **Customizable**:
   - Adjust reminder intervals
   - Choose the Pet character (`cat` or `dog`) in the configuration file
-  - Configure speech bubble messages, display durations, and hidden gaps
   - Choose the application language and theme
 - 🖥 **Native Experience**: Pure Windows application, no browser dependencies
 
@@ -42,6 +41,11 @@ Designed to be unobtrusive and minimal, it helps reduce the health risks of prol
 The Pet is the application's reminder channel. It can be dragged, clicked to
 acknowledge a reminder, or controlled through its context menu. The application
 does not use Windows toast notifications or tray balloon reminders.
+
+Click the Pet to hide it and start a new countdown. Its speech bubble shows a
+fixed reminder and this click instruction in the selected application language
+(Chinese or English). Bubble text and timing are built in; the former
+`speech_bubble` configuration is ignored and removed when configuration is saved.
 
 The configuration file is available from the application's **Open config folder**
 link or tray menu. Set `"character": "dog"` to use the Dog Pet; the default is

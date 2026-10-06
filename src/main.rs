@@ -147,11 +147,11 @@ fn run() -> Result<()> {
         instance,
         hwnd,
         animations,
-        config.speech_bubble.clone(),
+        language,
         config.pet_position.clone(),
         settings_menu_text(language),
     )?;
-    pet_window.set_menu_texts(language);
+    pet_window.set_language(language);
     let control_buttons = create_control_buttons(timer_panel, instance)?;
     let tray_icon = TrayIcon::create(
         hwnd,

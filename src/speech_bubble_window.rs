@@ -5,7 +5,7 @@ use windows::{
         Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM},
         Graphics::Gdi::{
             BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreatePen, CreateSolidBrush,
-            DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER, DT_NOPREFIX, DT_WORDBREAK, DeleteObject, DrawTextW, Ellipse,
+            DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER, DT_NOPREFIX, DT_SINGLELINE, DeleteObject, DrawTextW, Ellipse,
             EndPaint, FF_DONTCARE, FW_NORMAL, GetDC, GetMonitorInfoW, GetTextExtentPoint32W, HGDIOBJ, InvalidateRect,
             MONITOR_DEFAULTTONEAREST, MonitorFromWindow, OUT_DEFAULT_PRECIS, PS_SOLID, ReleaseDC, SelectObject,
             SetBkMode, SetTextColor, SetWindowRgn, TRANSPARENT,
@@ -21,16 +21,18 @@ use windows::{
     core::{Error, PCWSTR, Result, w},
 };
 
-use crate::speech_bubble::{SpeechBubbleConfig, SpeechBubblePlayer};
+use crate::i18n::{Language, pet_reminder_text};
+use crate::speech_bubble::SpeechBubblePlayer;
 
 const BUBBLE_WINDOW_CLASS: PCWSTR = w!("YHB-StandAwhileSpeechBubble");
 const BUBBLE_MIN_WIDTH: i32 = 180;
 const BUBBLE_MIN_HEIGHT: i32 = 76;
 const BUBBLE_HORIZONTAL_PADDING: i32 = 80;
 const BUBBLE_VERTICAL_PADDING: i32 = 56;
-const BUBBLE_LINE_HEIGHT: i32 = 38;
+const BUBBLE_TEXT_GAP: i32 = 6;
 const BUBBLE_GAP: i32 = 8;
 const BUBBLE_FONT_HEIGHT: i32 = -30;
+const BUBBLE_HINT_FONT_HEIGHT: i32 = 20;
 const BUBBLE_BORDER_WIDTH: i32 = 4;
 const BUBBLE_BACKGROUND: COLORREF = COLORREF(0x00c4efff);
 const BUBBLE_BORDER: COLORREF = COLORREF(0x006e6948);
@@ -174,37 +176,73 @@ fn set_ellipse_region(hwnd: HWND, width: i32, height: i32) -> Result<()> {
     Ok(())
 }
 
-fn measure_bubble(hwnd: HWND, text: &str, font: windows::Win32::Graphics::Gdi::HFONT, dpi: u32) -> Result<(i32, i32)> {
+fn measure_line(
+    hdc: windows::Win32::Graphics::Gdi::HDC,
+    state: &BubbleState,
+    index: usize,
+    line: &str,
+) -> Result<SIZE> {
+    let font = if index == 0 { state.font } else { state.hint_font };
+    let utf16 = line.encode_utf16().collect::<Vec<_>>();
+    let mut size = SIZE::default();
+    let previous = unsafe { SelectObject(hdc, HGDIOBJ(font.0)) };
+    let success = unsafe { GetTextExtentPoint32W(hdc, &utf16, &mut size) }.as_bool();
+    unsafe {
+        SelectObject(hdc, previous);
+    }
+    if !success {
+        return Err(Error::from_win32());
+    }
+    Ok(size)
+}
+
+fn measure_bubble(hwnd: HWND, state: &BubbleState) -> Result<(i32, i32)> {
     let hdc = unsafe { GetDC(Some(hwnd)) };
     if hdc.is_invalid() {
         return Err(Error::from_win32());
     }
-    let previous = unsafe { SelectObject(hdc, HGDIOBJ(font.0)) };
-    let mut max_width = 0;
-    for line in text.lines() {
-        let utf16 = line.encode_utf16().collect::<Vec<_>>();
-        let mut size = SIZE::default();
-        if !unsafe { GetTextExtentPoint32W(hdc, &utf16, &mut size) }.as_bool() {
-            unsafe {
-                SelectObject(hdc, previous);
-                let _ = ReleaseDC(Some(hwnd), hdc);
+    let result = (|| {
+        let mut width = 0;
+        let mut height = 0;
+        for (index, line) in state.text.lines().enumerate() {
+            let size = measure_line(hdc, state, index, line)?;
+            width = width.max(size.cx);
+            if index > 0 {
+                height += scale(BUBBLE_TEXT_GAP, state.dpi);
             }
-            return Err(Error::from_win32());
+            height += size.cy;
         }
-        max_width = max_width.max(size.cx);
-    }
+        Ok((
+            (width + 2 * scale(BUBBLE_HORIZONTAL_PADDING / 2, state.dpi)).max(scale(BUBBLE_MIN_WIDTH, state.dpi)),
+            (height + 2 * scale(BUBBLE_VERTICAL_PADDING / 2, state.dpi)).max(scale(BUBBLE_MIN_HEIGHT, state.dpi)),
+        ))
+    })();
     unsafe {
-        SelectObject(hdc, previous);
         let _ = ReleaseDC(Some(hwnd), hdc);
     }
-    let line_count = text.lines().count().max(1) as i32;
-    Ok((
-        (max_width + scale(BUBBLE_HORIZONTAL_PADDING, dpi)).max(scale(BUBBLE_MIN_WIDTH, dpi)),
-        (line_count * scale(BUBBLE_LINE_HEIGHT, dpi) + scale(BUBBLE_VERTICAL_PADDING, dpi))
-            .max(scale(BUBBLE_MIN_HEIGHT, dpi)),
-    ))
+    result
 }
 
+fn create_bubble_font(height: i32, dpi: u32) -> windows::Win32::Graphics::Gdi::HFONT {
+    unsafe {
+        CreateFontW(
+            -scale(height, dpi),
+            0,
+            0,
+            0,
+            FW_NORMAL.0 as i32,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY,
+            DEFAULT_PITCH.0 as u32 | FF_DONTCARE.0 as u32,
+            w!("Segoe UI"),
+        )
+    }
+}
 impl Drop for SpeechBubbleWindow {
     fn drop(&mut self) {
         if !self.hwnd.is_invalid() {
@@ -222,6 +260,7 @@ struct BubbleState {
     pet_size: (i32, i32),
     text: String,
     font: windows::Win32::Graphics::Gdi::HFONT,
+    hint_font: windows::Win32::Graphics::Gdi::HFONT,
     brush: windows::Win32::Graphics::Gdi::HBRUSH,
     pen: windows::Win32::Graphics::Gdi::HPEN,
     width: i32,
@@ -232,31 +271,20 @@ struct BubbleState {
 
 impl BubbleState {
     fn new(dpi: u32, owner: HWND) -> Result<Self> {
-        let (font, brush, pen) = unsafe {
-            let font = CreateFontW(
-                -scale(-BUBBLE_FONT_HEIGHT, dpi),
-                0,
-                0,
-                0,
-                FW_NORMAL.0 as i32,
-                0,
-                0,
-                0,
-                DEFAULT_CHARSET,
-                OUT_DEFAULT_PRECIS,
-                CLIP_DEFAULT_PRECIS,
-                CLEARTYPE_QUALITY,
-                DEFAULT_PITCH.0 as u32 | FF_DONTCARE.0 as u32,
-                w!("Segoe UI"),
-            );
+        let (font, hint_font, brush, pen) = unsafe {
+            let font = create_bubble_font(-BUBBLE_FONT_HEIGHT, dpi);
+            let hint_font = create_bubble_font(BUBBLE_HINT_FONT_HEIGHT, dpi);
             let brush = CreateSolidBrush(BUBBLE_BACKGROUND);
             let pen = CreatePen(PS_SOLID, scale(BUBBLE_BORDER_WIDTH, dpi), BUBBLE_BORDER);
-            (font, brush, pen)
+            (font, hint_font, brush, pen)
         };
-        if font.is_invalid() || brush.is_invalid() || pen.is_invalid() {
+        if font.is_invalid() || hint_font.is_invalid() || brush.is_invalid() || pen.is_invalid() {
             unsafe {
                 if !font.is_invalid() {
                     let _ = DeleteObject(HGDIOBJ(font.0));
+                }
+                if !hint_font.is_invalid() {
+                    let _ = DeleteObject(HGDIOBJ(hint_font.0));
                 }
                 if !brush.is_invalid() {
                     let _ = DeleteObject(HGDIOBJ(brush.0));
@@ -275,6 +303,7 @@ impl BubbleState {
             pet_size: (0, 0),
             text: String::new(),
             font,
+            hint_font,
             brush,
             pen,
             width: scale(BUBBLE_MIN_WIDTH, dpi),
@@ -291,6 +320,7 @@ impl BubbleState {
         }
         let mut resources = Self::new(dpi, self.owner)?;
         std::mem::swap(&mut self.font, &mut resources.font);
+        std::mem::swap(&mut self.hint_font, &mut resources.hint_font);
         std::mem::swap(&mut self.pen, &mut resources.pen);
         self.dpi = dpi;
         self.position = None;
@@ -302,6 +332,7 @@ impl Drop for BubbleState {
     fn drop(&mut self) {
         unsafe {
             let _ = DeleteObject(HGDIOBJ(self.font.0));
+            let _ = DeleteObject(HGDIOBJ(self.hint_font.0));
             let _ = DeleteObject(HGDIOBJ(self.brush.0));
             let _ = DeleteObject(HGDIOBJ(self.pen.0));
         }
@@ -313,7 +344,7 @@ fn scale(value: i32, dpi: u32) -> i32 {
 }
 
 fn layout_bubble(hwnd: HWND, state: &mut BubbleState) -> Result<()> {
-    let (width, height) = measure_bubble(hwnd, &state.text, state.font, state.dpi)?;
+    let (width, height) = measure_bubble(hwnd, state)?;
     let size_changed = (state.width, state.height) != (width, height);
     let position = bubble_position(
         state.pet_position,
@@ -414,20 +445,26 @@ unsafe extern "system" fn speech_bubble_window_proc(hwnd: HWND, msg: u32, wparam
                     SelectObject(hdc, previous_pen);
                     let _ = SetBkMode(hdc, TRANSPARENT);
                     let _ = SetTextColor(hdc, BUBBLE_TEXT);
-                    let previous_font = SelectObject(hdc, HGDIOBJ(state.font.0));
-                    let mut text = state.text.encode_utf16().chain([0]).collect::<Vec<_>>();
-                    let text_len = text.len().saturating_sub(1);
                     rect.left += scale(BUBBLE_HORIZONTAL_PADDING / 2, state.dpi);
                     rect.right -= scale(BUBBLE_HORIZONTAL_PADDING / 2, state.dpi);
                     rect.top += scale(BUBBLE_VERTICAL_PADDING / 2, state.dpi);
-                    rect.bottom -= scale(BUBBLE_VERTICAL_PADDING / 2, state.dpi);
-                    let _ = DrawTextW(
-                        hdc,
-                        &mut text[..text_len],
-                        &mut rect,
-                        DT_CENTER | DT_NOPREFIX | DT_WORDBREAK,
-                    );
-                    SelectObject(hdc, previous_font);
+                    for (index, line) in state.text.lines().enumerate() {
+                        let Ok(size) = measure_line(hdc, state, index, line) else {
+                            continue;
+                        };
+                        if index > 0 {
+                            rect.top += scale(BUBBLE_TEXT_GAP, state.dpi);
+                        }
+                        rect.bottom = rect.top + size.cy;
+                        let font = if index == 0 { state.font } else { state.hint_font };
+                        let previous = SelectObject(hdc, HGDIOBJ(font.0));
+                        let mut text = line.encode_utf16().collect::<Vec<_>>();
+                        if !text.is_empty() {
+                            let _ = DrawTextW(hdc, &mut text, &mut rect, DT_CENTER | DT_NOPREFIX | DT_SINGLELINE);
+                        }
+                        SelectObject(hdc, previous);
+                        rect.top = rect.bottom;
+                    }
                 }
                 let _ = EndPaint(hwnd, &paint);
             }
@@ -448,19 +485,33 @@ unsafe extern "system" fn speech_bubble_window_proc(hwnd: HWND, msg: u32, wparam
 pub struct SpeechBubbleController {
     window: SpeechBubbleWindow,
     player: SpeechBubblePlayer,
+    language: Language,
 }
 
 impl SpeechBubbleController {
-    pub fn create(instance: HINSTANCE, owner: HWND, config: SpeechBubbleConfig) -> Result<Self> {
+    pub fn create(instance: HINSTANCE, owner: HWND, language: Language) -> Result<Self> {
         Ok(Self {
             window: SpeechBubbleWindow::create(instance, owner)?,
-            player: SpeechBubblePlayer::new(config),
+            player: SpeechBubblePlayer::new(),
+            language,
         })
     }
 
     pub fn update(&mut self, position: (i32, i32), size: (i32, i32), now: std::time::Instant) -> Result<()> {
-        let text = self.player.update(now).map(str::to_owned);
-        self.window.update(position, size, text.as_deref())
+        let text = self.player.update(now).then(|| pet_reminder_text(self.language));
+        self.window.update(position, size, text)
+    }
+
+    pub fn set_language(&mut self, language: Language) -> Result<()> {
+        if self.language == language {
+            return Ok(());
+        }
+        self.language = language;
+        let state = state_mut(self.window.hwnd).ok_or_else(Error::from_win32)?;
+        let visible = state.visible && self.player.is_visible();
+        let (position, size) = (state.pet_position, state.pet_size);
+        self.window
+            .update(position, size, visible.then(|| pet_reminder_text(language)))
     }
 
     pub fn start(&mut self, now: std::time::Instant, initial_delay: std::time::Duration) {
@@ -487,6 +538,60 @@ mod tests {
         right: 1_000,
         bottom: 800,
     };
+
+    #[test]
+    fn language_switch_updates_visible_text_without_restarting_or_showing_hidden_bubble() {
+        use super::*;
+        use std::time::{Duration, Instant};
+        use windows::Win32::{System::LibraryLoader::GetModuleHandleW, UI::WindowsAndMessaging::IsWindowVisible};
+        unsafe {
+            let instance: HINSTANCE = GetModuleHandleW(None).unwrap().into();
+            let owner = CreateWindowExW(
+                Default::default(),
+                w!("STATIC"),
+                w!(""),
+                Default::default(),
+                100,
+                100,
+                100,
+                100,
+                None,
+                None,
+                Some(instance),
+                None,
+            )
+            .unwrap();
+            let mut controller = SpeechBubbleController::create(instance, owner, Language::English).unwrap();
+            controller.set_language(Language::Chinese).unwrap();
+            assert!(!IsWindowVisible(controller.window.hwnd).as_bool());
+            assert!(state_mut(controller.window.hwnd).unwrap().text.is_empty());
+            let now = Instant::now();
+            controller.start(now, Duration::ZERO);
+            // Model a visible bubble while keeping the native test window hidden.
+            state_mut(controller.window.hwnd).unwrap().visible = true;
+            controller.update((300, 500), (100, 100), now).unwrap();
+            assert_eq!(
+                state_mut(controller.window.hwnd).unwrap().text,
+                "该站起来活动一下啦！\n单击桌宠，开始新一轮倒计时"
+            );
+            controller.set_language(Language::English).unwrap();
+            assert_eq!(
+                state_mut(controller.window.hwnd).unwrap().text,
+                "Time to stand up and stretch!\nClick the pet to start a new countdown."
+            );
+            assert_eq!(state_mut(controller.window.hwnd).unwrap().text.lines().count(), 2);
+            assert!(!IsWindowVisible(controller.window.hwnd).as_bool());
+            controller
+                .update((300, 500), (100, 100), now + Duration::from_secs(5))
+                .unwrap();
+            assert!(state_mut(controller.window.hwnd).unwrap().text.is_empty());
+            controller.set_language(Language::Chinese).unwrap();
+            assert!(!IsWindowVisible(controller.window.hwnd).as_bool());
+            assert!(state_mut(controller.window.hwnd).unwrap().text.is_empty());
+            drop(controller);
+            DestroyWindow(owner).unwrap();
+        }
+    }
 
     #[test]
     fn dpi_changes_update_font_border_region_and_anchored_layout() {
@@ -553,7 +658,7 @@ mod tests {
                     0
                 );
                 assert_eq!(pen.lopnWidth.x, scale(4, dpi as u32));
-                assert_eq!(state.height, 2 * scale(38, dpi as u32) + scale(56, dpi as u32));
+                assert!(state.height > scale(BUBBLE_MIN_HEIGHT, dpi as u32));
                 assert!(state.width >= scale(180, dpi as u32));
                 let mut actual = RECT::default();
                 GetWindowRect(bubble.hwnd, &mut actual).unwrap();
@@ -605,7 +710,96 @@ mod tests {
             bubble.set_position((work_area.left, work_area.top), pet_size).unwrap();
             let mut actual = RECT::default();
             GetWindowRect(bubble.hwnd, &mut actual).unwrap();
-            assert_eq!(actual.bottom - actual.top, 132);
+            assert!(actual.bottom - actual.top > scale(BUBBLE_MIN_HEIGHT, 96));
+            drop(bubble);
+            DestroyWindow(owner).unwrap();
+        }
+    }
+
+    #[test]
+    fn localized_reminder_and_click_instruction_fit_at_supported_dpis() {
+        use super::*;
+        use windows::Win32::{
+            Graphics::Gdi::DT_CALCRECT, System::LibraryLoader::GetModuleHandleW, UI::WindowsAndMessaging::SendMessageW,
+        };
+        unsafe {
+            let instance: HINSTANCE = GetModuleHandleW(None).unwrap().into();
+            let owner = CreateWindowExW(
+                Default::default(),
+                w!("STATIC"),
+                w!(""),
+                Default::default(),
+                100,
+                100,
+                100,
+                100,
+                None,
+                None,
+                Some(instance),
+                None,
+            )
+            .unwrap();
+            let bubble = SpeechBubbleWindow::create(instance, owner).unwrap();
+            for language in [Language::Chinese, Language::English] {
+                state_mut(bubble.hwnd).unwrap().text = pet_reminder_text(language).to_owned();
+                bubble.set_position((300, 500), (100, 100)).unwrap();
+                for dpi in [96, 120, 144, 192, 96] {
+                    SendMessageW(
+                        bubble.hwnd,
+                        WM_DPICHANGED,
+                        Some(WPARAM(dpi | (dpi << 16))),
+                        Some(LPARAM(0)),
+                    );
+                    let state = state_mut(bubble.hwnd).unwrap();
+                    let hdc = GetDC(Some(bubble.hwnd));
+                    assert!(!hdc.is_invalid());
+                    let available_width = state.width - 2 * scale(BUBBLE_HORIZONTAL_PADDING / 2, dpi as u32);
+                    let available_height = state.height - 2 * scale(BUBBLE_VERTICAL_PADDING / 2, dpi as u32);
+                    let mut total_height = 0;
+                    for (index, line) in state.text.lines().enumerate() {
+                        let font = if index == 0 { state.font } else { state.hint_font };
+                        let mut descriptor = windows::Win32::Graphics::Gdi::LOGFONTW::default();
+                        assert_ne!(
+                            windows::Win32::Graphics::Gdi::GetObjectW(
+                                HGDIOBJ(font.0),
+                                std::mem::size_of_val(&descriptor) as i32,
+                                Some((&mut descriptor as *mut windows::Win32::Graphics::Gdi::LOGFONTW).cast())
+                            ),
+                            0
+                        );
+                        assert_eq!(
+                            descriptor.lfHeight,
+                            -scale(if index == 0 { 30 } else { 20 }, dpi as u32)
+                        );
+                        let previous = SelectObject(hdc, HGDIOBJ(font.0));
+                        let mut text = line.encode_utf16().collect::<Vec<_>>();
+                        let mut text_rect = RECT {
+                            left: 0,
+                            top: 0,
+                            right: available_width,
+                            bottom: 0,
+                        };
+                        let height = DrawTextW(
+                            hdc,
+                            &mut text,
+                            &mut text_rect,
+                            DT_CALCRECT | DT_NOPREFIX | DT_SINGLELINE,
+                        );
+                        SelectObject(hdc, previous);
+                        assert!(height > 0);
+                        assert!(text_rect.right <= available_width);
+                        if index > 0 {
+                            total_height += scale(BUBBLE_TEXT_GAP, dpi as u32);
+                        }
+                        total_height += text_rect.bottom;
+                    }
+                    let _ = ReleaseDC(Some(bubble.hwnd), hdc);
+                    assert!(
+                        total_height <= available_height,
+                        "{language:?} at {dpi} DPI: text height {total_height} exceeds {available_height}"
+                    );
+                }
+            }
             drop(bubble);
             DestroyWindow(owner).unwrap();
         }

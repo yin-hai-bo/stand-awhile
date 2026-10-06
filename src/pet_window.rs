@@ -31,7 +31,6 @@ use crate::{
     config::{PetPosition, save_pet_position},
     i18n::Language,
     render::{LayeredRenderer, PixelSurface, SurfacePoint},
-    speech_bubble::SpeechBubbleConfig,
     speech_bubble_window::SpeechBubbleController,
 };
 
@@ -110,7 +109,7 @@ impl PetWindow {
         instance: HINSTANCE,
         owner: HWND,
         animations: CharacterAnimations,
-        speech_bubble_config: SpeechBubbleConfig,
+        language: Language,
         saved_position: Option<PetPosition>,
         settings_menu_text: &str,
     ) -> Result<Self> {
@@ -158,7 +157,7 @@ impl PetWindow {
                 return Err(error);
             }
         };
-        let speech_bubble = match SpeechBubbleController::create(instance, hwnd, speech_bubble_config) {
+        let speech_bubble = match SpeechBubbleController::create(instance, hwnd, language) {
             Ok(speech_bubble) => speech_bubble,
             Err(error) => {
                 unsafe {
@@ -247,8 +246,9 @@ impl PetWindow {
         }
     }
 
-    pub fn set_menu_texts(&self, language: Language) {
+    pub fn set_language(&self, language: Language) {
         if let Some(state) = state_mut(self.hwnd) {
+            let _ = state.speech_bubble.set_language(language);
             state.start_menu_text = crate::tray_menu_start_text(language).to_owned();
             state.show_main_menu_text = crate::tray_menu_show_text(language).to_owned();
             state.settings_menu_text = crate::settings_menu_text(language).to_owned();
@@ -974,12 +974,7 @@ mod tests {
                     drag: None,
                     hide_animation: None,
                     next_walk_at: Instant::now() + WALK_START_DELAY,
-                    speech_bubble: SpeechBubbleController::create(
-                        instance,
-                        hwnd,
-                        crate::config::Config::default().speech_bubble,
-                    )
-                    .unwrap(),
+                    speech_bubble: SpeechBubbleController::create(instance, hwnd, Language::English).unwrap(),
                     start_menu_text: String::new(),
                     show_main_menu_text: String::new(),
                     settings_menu_text: String::new(),

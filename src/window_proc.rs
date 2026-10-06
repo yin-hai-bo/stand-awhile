@@ -717,7 +717,7 @@ fn apply_saved_settings(hwnd: HWND) {
             crate::tray_menu_about_text(language),
             crate::tray_menu_exit_text(language),
         );
-        state.pet_window.set_menu_texts(language);
+        state.pet_window.set_language(language);
         unsafe {
             let title = crate::i18n::main_window_title(language)
                 .encode_utf16()
