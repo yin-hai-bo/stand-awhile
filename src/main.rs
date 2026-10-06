@@ -131,13 +131,12 @@ fn run() -> Result<()> {
     let timer_panel = create_timer_panel(hwnd, instance)?;
     resize_timer_panel(timer_panel, hwnd)?;
     let gdi_plus = GdiPlus::new()?;
-    let catalog = load_character_catalog(
-        &gdi_plus,
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("assets/pets/cat-dog")
-            .as_path(),
-    )
-    .map_err(|_| Error::from_win32())?;
+    let catalog = load_character_catalog(&gdi_plus).map_err(|error| {
+        Error::new(
+            windows::core::HRESULT(0x8000_4005u32 as i32),
+            format!("Could not load pet assets: {error:?}"),
+        )
+    })?;
     let animations = catalog
         .get(&config.character)
         .or_else(|| catalog.get("cat"))

@@ -1,4 +1,4 @@
-use std::{env, fs, process::Command};
+use std::{env, fs, path::Path, process::Command};
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -9,6 +9,7 @@ fn main() {
     println!("cargo:rerun-if-changed=assets");
     println!("cargo:rerun-if-changed=assets/app.ico");
     watch_git_head();
+    embed_pet_frames();
 
     if cfg!(target_os = "windows") {
         let _ = embed_resource::compile("app.rc", embed_resource::NONE);
@@ -26,6 +27,35 @@ fn main() {
     }
 
     println!("cargo:rustc-env=BUILD_COMMIT={commit}");
+}
+
+fn embed_pet_frames() {
+    fn collect_pngs(directory: &Path, files: &mut Vec<std::path::PathBuf>) {
+        for entry in fs::read_dir(directory).expect("could not read pet assets") {
+            let path = entry.expect("could not read pet asset entry").path();
+            if path.is_dir() {
+                collect_pngs(&path, files);
+            } else if path.extension().is_some_and(|extension| extension == "png") {
+                files.push(path);
+            }
+        }
+    }
+
+    let root = Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).join("assets/pets/cat-dog");
+    let mut files = Vec::new();
+    collect_pngs(&root.join("png"), &mut files);
+    files.sort();
+    let mut source = String::from("static EMBEDDED_FRAMES: &[(&str, &[u8])] = &[\n");
+    for path in files {
+        let name = path.strip_prefix(&root).unwrap().to_str().unwrap().replace('\\', "/");
+        source.push_str(&format!(
+            "    ({name:?}, include_bytes!({:?})),\n",
+            path.to_str().unwrap()
+        ));
+    }
+    source.push_str("];\n");
+    fs::write(Path::new(&env::var("OUT_DIR").unwrap()).join("pet_frames.rs"), source)
+        .expect("could not write embedded pet assets");
 }
 
 fn git_is_available() -> bool {

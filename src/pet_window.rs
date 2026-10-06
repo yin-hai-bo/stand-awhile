@@ -17,8 +17,8 @@ use windows::{
             HTTRANSPARENT, HWND_TOPMOST, IDC_ARROW, KillTimer, LoadCursorW, MF_SEPARATOR, MF_STRING, RegisterClassExW,
             SPI_GETWORKAREA, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE, SetTimer,
             SetWindowLongPtrW, SetWindowPos, ShowWindow, SystemParametersInfoW, TPM_LEFTALIGN, TPM_RETURNCMD,
-            TPM_RIGHTBUTTON, TrackPopupMenuEx, WM_APP, WM_DPICHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
-            WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED,
+            TPM_RIGHTBUTTON, TrackPopupMenuEx, WM_APP, WM_CAPTURECHANGED, WM_DPICHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP,
+            WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED,
             WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
         },
     },
@@ -550,6 +550,12 @@ unsafe extern "system" fn pet_window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
             }
             LRESULT(0)
         }
+        WM_CAPTURECHANGED => {
+            if let Some(state) = state_mut(hwnd) {
+                state.drag = None;
+            }
+            LRESULT(0)
+        }
         WM_RBUTTONUP => {
             if let Some(state) = state_mut(hwnd) {
                 let _ = show_context_menu(hwnd, state);
@@ -1039,6 +1045,23 @@ mod tests {
             );
             pet
         }
+    }
+
+    #[test]
+    fn losing_mouse_capture_cancels_drag_without_acknowledging() {
+        use super::*;
+        use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_CAPTURECHANGED};
+        let pet = hidden_test_pet();
+        state_mut(pet.hwnd).unwrap().drag = Some(DragState {
+            pointer_start: POINT { x: 100, y: 100 },
+            window_start: POINT { x: 100, y: 100 },
+            moved: false,
+        });
+        unsafe {
+            SendMessageW(pet.hwnd, WM_CAPTURECHANGED, Some(WPARAM(0)), Some(LPARAM(0)));
+        }
+        assert!(state_mut(pet.hwnd).unwrap().drag.is_none());
+        assert!(state_mut(pet.hwnd).unwrap().hide_animation.is_none());
     }
 
     #[test]

@@ -83,6 +83,21 @@ pub fn set_initial_remaining_seconds(seconds: u32) {
     REMAINING_SECONDS.store(seconds, Ordering::Relaxed);
 }
 
+fn apply_timer_period(hwnd: HWND, seconds: u32) {
+    if seconds == initial_remaining_seconds() {
+        return;
+    }
+    let previous_remaining = remaining_seconds();
+    set_initial_remaining_seconds(seconds);
+    unsafe {
+        invalidate_countdown(hwnd, previous_remaining);
+        invalidate_countdown(hwnd, seconds);
+    }
+    if window_state(hwnd).is_some() {
+        let _ = sync_control_button_enabled(hwnd);
+    }
+}
+
 pub fn remaining_seconds() -> u32 {
     REMAINING_SECONDS.load(Ordering::Relaxed)
 }
@@ -255,7 +270,6 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
             LRESULT(0)
         }
         WM_CLOSE => {
-            hide_pet(hwnd);
             if window_state(hwnd).map(|state| state.tray_when_close).unwrap_or(false) {
                 unsafe {
                     let _ = ShowWindow(hwnd, SW_HIDE);
@@ -409,7 +423,7 @@ fn sync_control_button_enabled(hwnd: HWND) -> windows::core::Result<()> {
         &window_state(hwnd).expect("window state missing").control_buttons,
         play_enabled(timer_state),
         pause_enabled(timer_state),
-        reset_enabled(remaining),
+        reset_enabled(timer_state, remaining),
     );
     Ok(())
 }
@@ -425,8 +439,8 @@ fn pause_enabled(timer_state: TimerState) -> bool {
     matches!(timer_state, TimerState::Running)
 }
 
-fn reset_enabled(remaining_seconds: u32) -> bool {
-    remaining_seconds != initial_remaining_seconds()
+fn reset_enabled(timer_state: TimerState, remaining_seconds: u32) -> bool {
+    timer_state != TimerState::NotStarted || remaining_seconds != initial_remaining_seconds()
 }
 
 fn start_timer(hwnd: HWND) {
@@ -699,7 +713,7 @@ fn apply_saved_settings(hwnd: HWND) {
     let Ok(config) = Config::load() else {
         return;
     };
-    set_initial_remaining_seconds(config.period);
+    apply_timer_period(hwnd, config.period);
     let language = config.language();
     let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
     if let Some(state) = window_state_mut(hwnd) {
@@ -757,5 +771,47 @@ fn settings_back_text(language: Language) -> &'static str {
     match language {
         Language::Chinese => "< 返回",
         Language::English => "< Back",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    static TIMER_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn unrelated_settings_preserve_running_paused_and_finished_countdowns() {
+        let _guard = TIMER_TEST_LOCK.lock().unwrap();
+        set_initial_remaining_seconds(1200);
+        for (state, remaining) in [
+            (TimerState::Running, 731),
+            (TimerState::Paused, 412),
+            (TimerState::Finished, 0),
+        ] {
+            *TIMER_STATE.lock().unwrap() = state;
+            REMAINING_SECONDS.store(remaining, Ordering::Relaxed);
+            apply_timer_period(HWND::default(), 1200);
+            assert_eq!(remaining_seconds(), remaining);
+            assert_eq!(*TIMER_STATE.lock().unwrap(), state);
+        }
+        apply_timer_period(HWND::default(), 600);
+        assert_eq!(initial_remaining_seconds(), 600);
+        assert_eq!(remaining_seconds(), 600);
+        set_initial_remaining_seconds(DEFAULT_INITIAL_REMAINING_SECONDS);
+        *TIMER_STATE.lock().unwrap() = TimerState::NotStarted;
+    }
+
+    #[test]
+    fn timer_button_states_allow_reset_before_the_first_tick() {
+        let _guard = TIMER_TEST_LOCK.lock().unwrap();
+        let initial = initial_remaining_seconds();
+        assert!(play_enabled(TimerState::NotStarted));
+        assert!(!pause_enabled(TimerState::NotStarted));
+        assert!(!reset_enabled(TimerState::NotStarted, initial));
+        for state in [TimerState::Running, TimerState::Paused, TimerState::Finished] {
+            assert!(reset_enabled(state, initial));
+            assert_eq!(play_enabled(state), state != TimerState::Running);
+            assert_eq!(pause_enabled(state), state == TimerState::Running);
+        }
     }
 }

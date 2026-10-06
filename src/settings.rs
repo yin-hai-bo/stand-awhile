@@ -73,6 +73,25 @@ struct SettingsState {
     control_brush: HBRUSH,
 }
 
+impl Drop for SettingsState {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = DeleteObject(HGDIOBJ(self.background_brush.0));
+            let _ = DeleteObject(HGDIOBJ(self.control_brush.0));
+            if let Some(font) = self.title_font.take() {
+                let _ = DeleteObject(HGDIOBJ(font.0));
+            }
+        }
+        #[cfg(test)]
+        STATE_DROPS.with(|count| count.set(count.get() + 1));
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static STATE_DROPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub fn create_settings_panel(parent: HWND, instance: HINSTANCE, config: Config, font: Option<HFONT>) -> Result<HWND> {
     register_class(instance)?;
     let dark_mode = is_settings_dark_mode(&config);
@@ -93,8 +112,8 @@ pub fn create_settings_panel(parent: HWND, instance: HINSTANCE, config: Config, 
         background_brush: HBRUSH::default(),
         control_brush: HBRUSH::default(),
     });
-    let state_ptr = Box::into_raw(state);
-    match unsafe {
+    let mut state = Some(state);
+    unsafe {
         CreateWindowExW(
             WS_EX_CONTROLPARENT,
             SETTINGS_CLASS,
@@ -107,16 +126,8 @@ pub fn create_settings_panel(parent: HWND, instance: HINSTANCE, config: Config, 
             Some(parent),
             None,
             Some(instance),
-            Some(state_ptr.cast()),
+            Some((&mut state as *mut Option<Box<SettingsState>>).cast()),
         )
-    } {
-        Ok(hwnd) => Ok(hwnd),
-        Err(error) => {
-            unsafe {
-                drop(Box::from_raw(state_ptr));
-            }
-            Err(error)
-        }
     }
 }
 
@@ -266,7 +277,13 @@ unsafe extern "system" fn settings_window_proc(hwnd: HWND, msg: u32, wparam: WPA
     match msg {
         windows::Win32::UI::WindowsAndMessaging::WM_NCCREATE => {
             let create = unsafe { &*(lparam.0 as *const CREATESTRUCTW) };
-            unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, create.lpCreateParams as isize) };
+            let Some(state) = (unsafe { (create.lpCreateParams as *mut Option<Box<SettingsState>>).as_mut() }) else {
+                return LRESULT(0);
+            };
+            let Some(state) = state.take() else {
+                return LRESULT(0);
+            };
+            unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize) };
             LRESULT(1)
         }
         WM_CREATE => {
@@ -336,7 +353,7 @@ unsafe extern "system" fn settings_window_proc(hwnd: HWND, msg: u32, wparam: WPA
                     CHARACTER_CAT_ID | CHARACTER_DOG_ID | LANGUAGE_AUTO_ID | LANGUAGE_ZH_ID | LANGUAGE_EN_ID
                     | THEME_SYSTEM_ID | THEME_LIGHT_ID | THEME_DARK_ID | CLOSE_EXIT_ID | CLOSE_TRAY_ID => {
                         if let Some(state) = state_mut(hwnd) {
-                            if let Ok(config) = read_config_without_period(state) {
+                            if let Ok(config) = Config::load().map(|config| read_config_without_period(state, config)) {
                                 if config.save().is_ok() {
                                     state.config = config;
                                     unsafe {
@@ -371,31 +388,23 @@ unsafe extern "system" fn settings_window_proc(hwnd: HWND, msg: u32, wparam: WPA
             LRESULT(0)
         }
         WM_NCDESTROY => {
-            if let Some(state) = state_mut(hwnd) {
-                if state.embedded {
-                    unsafe {
-                        let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
-                            Some(state.parent),
-                            WM_COMMAND,
-                            WPARAM(SETTINGS_CLOSED_ID),
-                            LPARAM(0),
-                        );
-                    }
-                }
+            if let Some(state) = state_mut(hwnd)
+                && state.embedded
+            {
                 unsafe {
-                    if !state.background_brush.is_invalid() {
-                        let _ = DeleteObject(HGDIOBJ(state.background_brush.0));
-                    }
-                    if !state.control_brush.is_invalid() {
-                        let _ = DeleteObject(HGDIOBJ(state.control_brush.0));
-                    }
-                    if let Some(font) = state.title_font.take() {
-                        let _ = DeleteObject(HGDIOBJ(font.0));
-                    }
+                    let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                        Some(state.parent),
+                        WM_COMMAND,
+                        WPARAM(SETTINGS_CLOSED_ID),
+                        LPARAM(0),
+                    );
                 }
             }
-            unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) };
-            LRESULT(0)
+            let raw = unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) };
+            if raw != 0 {
+                drop(unsafe { Box::from_raw(raw as *mut SettingsState) });
+            }
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
@@ -770,15 +779,11 @@ fn is_settings_dark_mode(config: &Config) -> bool {
     }
 }
 
-fn read_config(state: &SettingsState) -> Result<Config> {
+fn read_config(state: &SettingsState, config: Config) -> Config {
     let period = get_window_text(state.period).parse::<u32>().unwrap_or(1).max(1);
-    let mut config = state.config.clone();
+    let mut config = read_config_without_period(state, config);
     config.period = period.max(1);
-    config.character = radio_text(&state.character, &["cat", "dog"]);
-    config.language = radio_text(&state.language, &["auto", "zh", "en"]);
-    config.theme = radio_text(&state.theme, &["system", "light", "dark"]);
-    config.tray_when_close = is_checked(state.close_behavior[1]);
-    Ok(config)
+    config
 }
 
 fn normalize_period(hwnd: HWND) {
@@ -793,16 +798,15 @@ pub fn save_settings_panel(hwnd: HWND) -> Result<()> {
     let Some(state) = state_mut(hwnd) else {
         return Err(Error::from_win32());
     };
-    read_config(state)?.save()
+    read_config(state, Config::load()?).save()
 }
 
-fn read_config_without_period(state: &SettingsState) -> Result<Config> {
-    let mut config = state.config.clone();
+fn read_config_without_period(state: &SettingsState, mut config: Config) -> Config {
     config.character = radio_text(&state.character, &["cat", "dog"]);
     config.language = radio_text(&state.language, &["auto", "zh", "en"]);
     config.theme = radio_text(&state.theme, &["system", "light", "dark"]);
     config.tray_when_close = is_checked(state.close_behavior[1]);
-    Ok(config)
+    config
 }
 
 fn create_static(parent: HWND, instance: HINSTANCE, text: &str, x: i32, y: i32) -> HWND {
@@ -960,4 +964,66 @@ fn get_window_text(hwnd: HWND) -> String {
 
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain([0]).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::PetPosition;
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+
+    #[test]
+    fn settings_preserve_new_pet_position_and_release_state_on_close() -> Result<()> {
+        let instance: HINSTANCE = unsafe { GetModuleHandleW(None)? }.into();
+        let parent = unsafe {
+            CreateWindowExW(
+                Default::default(),
+                w!("STATIC"),
+                w!(""),
+                Default::default(),
+                0,
+                0,
+                800,
+                533,
+                None,
+                None,
+                Some(instance),
+                None,
+            )?
+        };
+        let drops = STATE_DROPS.with(|count| count.get());
+        for _ in 0..3 {
+            let panel = create_settings_panel(parent, instance, Config::default(), None)?;
+            let state = state_mut(panel).unwrap();
+            let latest = Config {
+                pet_position: Some(PetPosition {
+                    monitor: "new monitor".into(),
+                    relative_x: 20,
+                    relative_y: 30,
+                    screen_x: 40,
+                    screen_y: 50,
+                }),
+                ..Config::default()
+            };
+            set_window_text(state.period, "90");
+            let changed = read_config_without_period(state, latest.clone());
+            assert_eq!(changed.pet_position, latest.pet_position);
+            assert_eq!(changed.period, latest.period);
+            let saved = read_config(state, latest.clone());
+            assert_eq!(saved.period, 90);
+            assert_eq!(saved.pet_position, latest.pet_position);
+            unsafe { DestroyWindow(panel)? };
+        }
+        unsafe { DestroyWindow(parent)? };
+        assert_eq!(STATE_DROPS.with(|count| count.get()), drops + 3);
+        Ok(())
+    }
+
+    #[test]
+    fn failed_settings_creation_releases_state() {
+        let instance: HINSTANCE = unsafe { GetModuleHandleW(None).unwrap() }.into();
+        let drops = STATE_DROPS.with(|count| count.get());
+        assert!(create_settings_panel(HWND(-1isize as _), instance, Config::default(), None).is_err());
+        assert_eq!(STATE_DROPS.with(|count| count.get()), drops + 1);
+    }
 }

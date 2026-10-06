@@ -38,6 +38,9 @@ Designed to be unobtrusive and minimal, it helps reduce the health risks of prol
 3. Extract and run `StandAwhile.exe`
 4. The app will minimize to the system tray
 
+The executable includes the Cat and Dog images and animation manifest. You can
+distribute the EXE alone; no external `assets` folder is required at runtime.
+
 The Pet is the application's reminder channel. It can be dragged, clicked to
 acknowledge a reminder, or controlled through its context menu. The application
 does not use Windows toast notifications or tray balloon reminders.

@@ -1,7 +1,5 @@
 use std::{
     collections::BTreeMap,
-    fs,
-    os::windows::ffi::OsStrExt,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -9,11 +7,11 @@ use std::{
 use serde::Deserialize;
 use windows::{
     Win32::Graphics::GdiPlus::{
-        BitmapData, GdipBitmapLockBits, GdipBitmapUnlockBits, GdipCloneBitmapAreaI, GdipCreateBitmapFromFile,
+        BitmapData, GdipBitmapLockBits, GdipBitmapUnlockBits, GdipCloneBitmapAreaI, GdipCreateBitmapFromStream,
         GdipDisposeImage, GdipGetImageHeight, GdipGetImageWidth, GpBitmap, GpImage, ImageLockModeRead,
         PixelFormatAlpha, PixelFormatCanonical, PixelFormatGDI, Rect, Status,
     },
-    core::PCWSTR,
+    Win32::UI::Shell::SHCreateMemStream,
 };
 
 use crate::{
@@ -22,19 +20,14 @@ use crate::{
 };
 
 const PIXEL_FORMAT_32BPP_ARGB: i32 = (PixelFormatAlpha | PixelFormatCanonical | PixelFormatGDI | (32 << 8) | 10) as i32;
+const EMBEDDED_MANIFEST: &str = include_str!("../assets/pets/cat-dog/manifest.json");
+include!(concat!(env!("OUT_DIR"), "/pet_frames.rs"));
 
 #[derive(Debug)]
 pub enum AssetError {
-    Io(std::io::Error),
     Manifest(serde_json::Error),
     InvalidManifest(String),
     Decode(String),
-}
-
-impl From<std::io::Error> for AssetError {
-    fn from(error: std::io::Error) -> Self {
-        Self::Io(error)
-    }
 }
 
 impl From<serde_json::Error> for AssetError {
@@ -135,13 +128,13 @@ struct AnimationManifest {
     loop_mode: bool,
 }
 
-pub fn load_character_catalog(_gdi_plus: &GdiPlus, asset_root: &Path) -> Result<CharacterCatalog, AssetError> {
-    let manifest = load_manifest(&asset_root.join("manifest.json"))?;
+pub fn load_character_catalog(_gdi_plus: &GdiPlus) -> Result<CharacterCatalog, AssetError> {
+    let manifest = load_manifest()?;
     let characters = manifest
         .characters
         .iter()
         .map(|(id, character)| {
-            load_character_animations(asset_root, character, manifest.default_frame_duration_ms)
+            load_character_animations(character, manifest.default_frame_duration_ms)
                 .map(|animations| (id.clone(), animations))
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
@@ -153,32 +146,29 @@ pub fn load_character_catalog(_gdi_plus: &GdiPlus, asset_root: &Path) -> Result<
     Ok(CharacterCatalog { characters })
 }
 
-pub fn load_cat_animations(_gdi_plus: &GdiPlus, asset_root: &Path) -> Result<CharacterAnimations, AssetError> {
-    load_character_catalog(_gdi_plus, asset_root)?
+pub fn load_cat_animations(_gdi_plus: &GdiPlus) -> Result<CharacterAnimations, AssetError> {
+    load_character_catalog(_gdi_plus)?
         .characters
         .remove("cat")
         .ok_or_else(|| AssetError::InvalidManifest("missing cat character".to_owned()))
 }
 
 fn load_character_animations(
-    asset_root: &Path,
     character: &CharacterManifest,
     default_frame_duration_ms: u64,
 ) -> Result<CharacterAnimations, AssetError> {
-    let idle = load_animation(asset_root, character, "idle", default_frame_duration_ms)?;
-    let walk = load_animation(asset_root, character, "walk", default_frame_duration_ms)?;
-    let jump = load_animation(asset_root, character, "jump", default_frame_duration_ms)?;
+    let idle = load_animation(character, "idle", default_frame_duration_ms)?;
+    let walk = load_animation(character, "walk", default_frame_duration_ms)?;
+    let jump = load_animation(character, "jump", default_frame_duration_ms)?;
 
     Ok(CharacterAnimations { idle, walk, jump })
 }
 
-fn load_manifest(path: &Path) -> Result<Manifest, AssetError> {
-    let content = fs::read_to_string(path)?;
-    Ok(serde_json::from_str(&content)?)
+fn load_manifest() -> Result<Manifest, AssetError> {
+    Ok(serde_json::from_str(EMBEDDED_MANIFEST)?)
 }
 
 fn load_animation(
-    asset_root: &Path,
     character: &CharacterManifest,
     name: &str,
     default_frame_duration_ms: u64,
@@ -194,7 +184,7 @@ fn load_animation(
     let frame_paths = (1..=animation.frame_count)
         .map(|index| {
             let filename = animation.pattern.replace("{index}", &index.to_string());
-            asset_root.join(&character.path).join(filename)
+            character.path.join(filename)
         })
         .collect::<Vec<_>>();
     let frames = frame_paths
@@ -216,10 +206,20 @@ fn load_animation(
 }
 
 fn load_png_frame(path: &Path) -> Result<PreparedFrame, AssetError> {
-    let wide_path = path.as_os_str().encode_wide().chain([0]).collect::<Vec<_>>();
+    let name = path.to_string_lossy().replace('\\', "/");
+    let bytes = EMBEDDED_FRAMES
+        .iter()
+        .find_map(|(key, bytes)| (*key == name).then_some(*bytes))
+        .ok_or_else(|| AssetError::InvalidManifest(format!("missing embedded PNG: {name}")))?;
+    decode_png_frame(bytes)
+}
+
+fn decode_png_frame(bytes: &[u8]) -> Result<PreparedFrame, AssetError> {
+    let stream = unsafe { SHCreateMemStream(Some(bytes)) }
+        .ok_or_else(|| AssetError::Decode("could not allocate PNG memory stream".to_owned()))?;
     let mut bitmap = std::ptr::null_mut::<GpBitmap>();
 
-    let status = unsafe { GdipCreateBitmapFromFile(PCWSTR(wide_path.as_ptr()), &mut bitmap) };
+    let status = unsafe { GdipCreateBitmapFromStream(&stream, &mut bitmap) };
     ensure_gdiplus_ok(status, "could not load PNG")?;
 
     let result = read_bitmap(bitmap);
@@ -341,17 +341,12 @@ fn ensure_gdiplus_ok(status: Status, operation: &str) -> Result<(), AssetError> 
 #[cfg(test)]
 mod tests {
     use super::{FrameHitbox, copy_premultiplied_pixels, load_cat_animations, load_manifest, premultiply};
-    use std::{path::Path, ptr::null_mut};
+    use std::ptr::null_mut;
     use windows::Win32::Graphics::GdiPlus::BitmapData;
 
     #[test]
     fn loads_the_checked_in_cat_manifest() {
-        let manifest = load_manifest(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("assets/pets/cat-dog/manifest.json")
-                .as_path(),
-        )
-        .expect("checked-in manifest should be valid");
+        let manifest = load_manifest().expect("checked-in manifest should be valid");
         let cat = manifest.characters.get("cat").expect("cat should be present");
         assert_eq!(cat.animations["idle"].frame_count, 10);
         assert_eq!(cat.animations["walk"].frame_count, 10);
@@ -360,12 +355,7 @@ mod tests {
 
     #[test]
     fn resolves_frame_numbers_in_stable_order() {
-        let manifest = load_manifest(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("assets/pets/cat-dog/manifest.json")
-                .as_path(),
-        )
-        .expect("checked-in manifest should be valid");
+        let manifest = load_manifest().expect("checked-in manifest should be valid");
         let cat = manifest.characters.get("cat").expect("cat should be present");
         let animation = cat.animations.get("idle").expect("idle should be present");
 
@@ -377,15 +367,9 @@ mod tests {
     }
 
     #[test]
-    fn loads_cat_png_frames() {
+    fn loads_embedded_frames_for_every_manifest_animation() {
         let gdi_plus = crate::ui::GdiPlus::new().expect("GDI+ should initialize");
-        let assets = load_cat_animations(
-            &gdi_plus,
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("assets/pets/cat-dog")
-                .as_path(),
-        )
-        .expect("checked-in cat assets should load");
+        let assets = load_cat_animations(&gdi_plus).expect("checked-in cat assets should load");
 
         assert_eq!(assets.idle.frames.len(), 10);
         assert_eq!(assets.walk.frames.len(), 10);
@@ -395,16 +379,44 @@ mod tests {
             (assets.idle.frames[0].width * assets.idle.frames[0].height * 4) as usize
         );
         assert!(assets.idle.frames[0].pixels.chunks_exact(4).any(|pixel| pixel[3] != 0));
+
+        let catalog = super::load_character_catalog(&gdi_plus).unwrap();
+        for character in ["cat", "dog"] {
+            let animations = catalog.get(character).unwrap();
+            assert_eq!(animations.idle.frames.len(), 10);
+            assert_eq!(animations.walk.frames.len(), 10);
+            assert_eq!(animations.jump.frames.len(), 8);
+            assert!(animations.jump.frames.iter().all(|frame| frame.hitbox.is_some()));
+        }
+        // Verify every manifest frame, including animations reserved for later use.
+        let manifest = load_manifest().unwrap();
+        let mut frame_count = 0;
+        for character in manifest.characters.values() {
+            for animation in character.animations.values() {
+                for index in 1..=animation.frame_count {
+                    let path = character
+                        .path
+                        .join(animation.pattern.replace("{index}", &index.to_string()));
+                    let frame = super::load_png_frame(&path).unwrap();
+                    assert!(frame.width > 0 && frame.height > 0);
+                    assert_eq!(frame.pixels.len(), (frame.width * frame.height * 4) as usize);
+                    frame_count += 1;
+                }
+            }
+        }
+        assert_eq!(frame_count, super::EMBEDDED_FRAMES.len());
+        assert!(super::decode_png_frame(b"not a PNG").is_err());
+    }
+
+    #[test]
+    fn missing_embedded_frames_report_the_resource_name() {
+        let error = super::load_png_frame(std::path::Path::new("png/missing.png")).unwrap_err();
+        assert!(matches!(error, super::AssetError::InvalidManifest(message) if message.contains("png/missing.png")));
     }
 
     #[test]
     fn loads_every_character_into_the_catalog() {
-        let manifest = load_manifest(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("assets/pets/cat-dog/manifest.json")
-                .as_path(),
-        )
-        .expect("checked-in character catalog should load");
+        let manifest = load_manifest().expect("checked-in character catalog should load");
 
         assert_eq!(
             manifest.characters.keys().map(String::as_str).collect::<Vec<_>>(),
