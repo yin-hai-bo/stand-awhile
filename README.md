@@ -57,6 +57,12 @@ visible, and returns to Walk when the bubble disappears.
 When a countdown ends, the Pet flies in from the nearest top or bottom screen
 edge with Jump, then switches to Walk before the bubble cycle starts.
 
+On the first countdown start of each app session, clicking the Pet or choosing
+**Start** from either the Pet or tray menu also hides the main window to the
+tray. Starting with the main window's Play button keeps the window visible.
+Later starts do not automatically hide it, including after pause or reset.
+This behavior is independent of the close-to-tray setting.
+
 Pause stops the countdown and hides the Pet. Reset restores the configured
 interval, stops the countdown, and keeps the Pet hidden. Closing the main window
 exits by default. Enable **Minimize to tray** in Settings to hide only the main

@@ -168,6 +168,7 @@ fn run() -> Result<()> {
     attach_window_state(
         hwnd,
         WindowState {
+            has_started_countdown: false,
             language,
             theme,
             tray_icon,

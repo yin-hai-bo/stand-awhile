@@ -56,7 +56,20 @@ enum TimerState {
     Finished,
 }
 
+#[derive(Clone, Copy)]
+enum StartSource {
+    MainWindow,
+    Pet,
+    Menu,
+}
+
+fn first_start_hides_main_window(started: &mut bool, source: StartSource) -> bool {
+    let first_start = !std::mem::replace(started, true);
+    first_start && !matches!(source, StartSource::MainWindow)
+}
+
 pub struct WindowState {
+    pub has_started_countdown: bool,
     pub language: Language,
     pub theme: Theme,
     pub tray_icon: TrayIcon,
@@ -164,7 +177,7 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
         WM_PET_COMMAND => {
             match wparam.0 {
                 PET_COMMAND_ACKNOWLEDGE => acknowledge_pet(hwnd),
-                PET_COMMAND_START => activate_button(hwnd, ControlButton::Play),
+                PET_COMMAND_START => activate_button(hwnd, ControlButton::Play, StartSource::Menu),
                 PET_COMMAND_SETTINGS => open_settings(hwnd),
                 PET_COMMAND_ABOUT => open_about(hwnd),
                 PET_COMMAND_SHOW_MAIN => unsafe {
@@ -212,7 +225,7 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
                 }
             }
             if let Some(button) = button_from_command(wparam) {
-                activate_button(hwnd, button);
+                activate_button(hwnd, button, StartSource::MainWindow);
                 return LRESULT(0);
             }
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
@@ -384,7 +397,7 @@ unsafe fn invalidate_countdown(hwnd: HWND, remaining_seconds: u32) {
     }
 }
 
-fn activate_button(hwnd: HWND, button: ControlButton) {
+fn activate_button(hwnd: HWND, button: ControlButton, source: StartSource) {
     let previous_remaining = REMAINING_SECONDS.load(Ordering::Relaxed);
 
     match button {
@@ -400,6 +413,7 @@ fn activate_button(hwnd: HWND, button: ControlButton) {
             }
             *TIMER_STATE.lock().expect("timer state mutex poisoned") = TimerState::Running;
             start_timer(hwnd);
+            record_countdown_start(hwnd, source);
         }
         ControlButton::Pause => {
             hide_pet(hwnd);
@@ -473,6 +487,7 @@ fn acknowledge_pet(hwnd: HWND) {
     let previous_remaining = REMAINING_SECONDS.swap(initial_remaining, Ordering::Relaxed);
     *TIMER_STATE.lock().expect("timer state mutex poisoned") = TimerState::Running;
     start_timer(hwnd);
+    record_countdown_start(hwnd, StartSource::Pet);
     unsafe {
         invalidate_countdown(hwnd, previous_remaining);
         invalidate_countdown(hwnd, initial_remaining);
@@ -483,6 +498,17 @@ fn acknowledge_pet(hwnd: HWND) {
 fn hide_pet(hwnd: HWND) {
     if let Some(state) = window_state(hwnd) {
         state.pet_window.hide();
+    }
+}
+
+fn record_countdown_start(hwnd: HWND, source: StartSource) {
+    let hide_main = window_state_mut(hwnd)
+        .map(|state| first_start_hides_main_window(&mut state.has_started_countdown, source))
+        .unwrap_or(false);
+    if hide_main {
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+        }
     }
 }
 
@@ -604,7 +630,7 @@ fn handle_tray_menu_command(hwnd: HWND, wparam: WPARAM) -> bool {
             true
         }
         TRAY_MENU_START_ID => {
-            activate_button(hwnd, ControlButton::Play);
+            activate_button(hwnd, ControlButton::Play, StartSource::Menu);
             true
         }
         TRAY_MENU_ABOUT_ID => {
@@ -785,6 +811,28 @@ fn settings_back_text(language: Language) -> &'static str {
 mod tests {
     use super::*;
     static TIMER_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn first_pet_or_menu_start_hides_main_window_only_once_per_app_session() {
+        for first_source in [StartSource::Pet, StartSource::Menu] {
+            let mut started = false;
+            assert!(first_start_hides_main_window(&mut started, first_source));
+            // Reopening the window and starting again after pause, reset, or a
+            // reminder must not hide it automatically.
+            for later_source in [StartSource::Pet, StartSource::Menu, StartSource::MainWindow] {
+                assert!(!first_start_hides_main_window(&mut started, later_source));
+            }
+        }
+    }
+
+    #[test]
+    fn first_main_window_play_consumes_first_start_without_hiding() {
+        let mut started = false;
+        assert!(!first_start_hides_main_window(&mut started, StartSource::MainWindow));
+        assert!(started);
+        assert!(!first_start_hides_main_window(&mut started, StartSource::Menu));
+        assert!(!first_start_hides_main_window(&mut started, StartSource::Pet));
+    }
 
     #[test]
     fn unrelated_settings_preserve_running_paused_and_finished_countdowns() {
