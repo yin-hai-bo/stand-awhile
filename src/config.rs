@@ -177,12 +177,6 @@ fn speech_bubble_to_file(config: &SpeechBubbleConfig) -> SpeechBubbleFile {
     }
 }
 
-pub fn set_tray_when_close(tray_when_close: bool) -> Result<()> {
-    let mut config = Config::load()?;
-    config.tray_when_close = tray_when_close;
-    config.save()
-}
-
 pub fn open_config_directory(hwnd: HWND) -> Result<()> {
     let config_dir = ensure_config_directory()?;
 

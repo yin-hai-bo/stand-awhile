@@ -21,12 +21,14 @@ pub const TRAY_MENU_OPEN_CONFIG_ID: usize = 41002;
 pub const TRAY_MENU_ABOUT_ID: usize = 41003;
 pub const TRAY_MENU_EXIT_ID: usize = 41004;
 pub const TRAY_MENU_START_ID: usize = 41005;
+pub const TRAY_MENU_SETTINGS_ID: usize = 41006;
 
 pub struct TrayIcon {
     tooltip: String,
     start_menu_text: String,
     show_menu_text: String,
     open_config_text: String,
+    settings_text: String,
     about_text: String,
     exit_menu_text: String,
 }
@@ -39,6 +41,7 @@ impl TrayIcon {
         start_menu_text: &str,
         show_menu_text: &str,
         open_config_text: &str,
+        settings_text: &str,
         about_text: &str,
         exit_menu_text: &str,
     ) -> Result<Self> {
@@ -55,6 +58,7 @@ impl TrayIcon {
             start_menu_text: start_menu_text.to_owned(),
             show_menu_text: show_menu_text.to_owned(),
             open_config_text: open_config_text.to_owned(),
+            settings_text: settings_text.to_owned(),
             about_text: about_text.to_owned(),
             exit_menu_text: exit_menu_text.to_owned(),
         })
@@ -101,6 +105,7 @@ impl TrayIcon {
         let menu = unsafe { CreatePopupMenu()? };
         let show_text = wide_null(&self.show_menu_text);
         let open_config_text = wide_null(&self.open_config_text);
+        let settings_text = wide_null(&self.settings_text);
         let about_text = wide_null(&self.about_text);
         let exit_text = wide_null(&self.exit_menu_text);
 
@@ -112,6 +117,7 @@ impl TrayIcon {
                 PCWSTR(wide_null(&self.start_menu_text).as_ptr()),
             )?;
             AppendMenuW(menu, MF_STRING, TRAY_MENU_SHOW_ID, PCWSTR(show_text.as_ptr()))?;
+            AppendMenuW(menu, MF_STRING, TRAY_MENU_SETTINGS_ID, PCWSTR(settings_text.as_ptr()))?;
             AppendMenuW(
                 menu,
                 MF_STRING,

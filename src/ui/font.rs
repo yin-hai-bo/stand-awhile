@@ -6,8 +6,8 @@ use std::{
 use windows::Win32::{
     Foundation::LPARAM,
     Graphics::Gdi::{
-        CreateFontIndirectW, DeleteObject, EnumFontFamiliesExW, GetDC, ReleaseDC, DEFAULT_CHARSET, HFONT, HGDIOBJ,
-        LOGFONTW, TEXTMETRICW,
+        CreateFontIndirectW, DEFAULT_CHARSET, DeleteObject, EnumFontFamiliesExW, GetDC, HFONT, HGDIOBJ, LOGFONTW,
+        ReleaseDC, TEXTMETRICW,
     },
     UI::{
         HiDpi::SystemParametersInfoForDpi,

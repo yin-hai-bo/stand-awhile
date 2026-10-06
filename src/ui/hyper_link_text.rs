@@ -6,9 +6,9 @@ use windows::Win32::{
     Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Gdi::{
         BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, DEFAULT_CHARSET, DT_CALCRECT, DT_LEFT,
-        DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW, EndPaint, FF_SWISS, GetDeviceCaps, HDC, HFONT,
-        InvalidateRect, LOGPIXELSY, OUT_DEFAULT_PRECIS, PAINTSTRUCT, SelectObject, SetBkMode, SetTextColor,
-        TRANSPARENT, VARIABLE_PITCH,
+        DT_SINGLELINE, DT_VCENTER, DrawTextW, EndPaint, FF_SWISS, GetDeviceCaps, HDC, HFONT, InvalidateRect,
+        LOGPIXELSY, OUT_DEFAULT_PRECIS, PAINTSTRUCT, SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
+        VARIABLE_PITCH,
     },
     System::LibraryLoader::GetModuleHandleW,
     UI::Controls::WM_MOUSELEAVE,
@@ -204,19 +204,6 @@ fn ensure_hyper_link_text_class_registered(instance: HINSTANCE) -> Result<()> {
         Ok(()) => Ok(()),
         Err(code) => Err(Error::from(windows::core::HRESULT(*code))),
     }
-}
-
-pub fn release_hyper_link_text_font() {
-    let mut cached_font = LINK_FONT.lock().expect("hyper link text font mutex poisoned");
-    if let Some(raw_font) = cached_font.take() {
-        unsafe {
-            let _ = DeleteObject(HFONT(raw_font as _).into());
-        }
-    }
-}
-
-pub fn invalidate_hyper_link_text_font() {
-    release_hyper_link_text_font();
 }
 
 unsafe extern "system" fn hyper_link_text_window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {

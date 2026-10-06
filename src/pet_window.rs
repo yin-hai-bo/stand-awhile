@@ -47,9 +47,11 @@ pub const PET_COMMAND_ACKNOWLEDGE: usize = 1;
 pub const PET_COMMAND_SHOW_MAIN: usize = 2;
 pub const PET_COMMAND_EXIT: usize = 3;
 pub const PET_COMMAND_START: usize = 4;
+pub const PET_COMMAND_SETTINGS: usize = 5;
 const PET_MENU_START: usize = 1;
 const PET_MENU_SHOW_MAIN: usize = 2;
 const PET_MENU_EXIT: usize = 3;
+const PET_MENU_SETTINGS: usize = 4;
 const HIDE_ANIMATION_DURATION_MS: u128 = 180;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,6 +76,7 @@ struct PetWindowState {
     hide_animation: Option<HideAnimation>,
     next_walk_at: Instant,
     speech_bubble: SpeechBubbleController,
+    settings_menu_text: String,
 }
 
 struct DragState {
@@ -100,6 +103,7 @@ impl PetWindow {
         animations: CharacterAnimations,
         speech_bubble_config: SpeechBubbleConfig,
         saved_position: Option<PetPosition>,
+        settings_menu_text: &str,
     ) -> Result<Self> {
         register_class(instance)?;
 
@@ -168,6 +172,7 @@ impl PetWindow {
                 hide_animation: None,
                 next_walk_at: now + WALK_START_DELAY,
                 speech_bubble,
+                settings_menu_text: settings_menu_text.to_owned(),
             },
         );
 
@@ -583,6 +588,8 @@ fn show_context_menu(hwnd: HWND, state: &PetWindowState) -> Result<()> {
     unsafe {
         AppendMenuW(menu, MF_STRING, PET_MENU_START, w!("Start Timer"))?;
         AppendMenuW(menu, MF_STRING, PET_MENU_SHOW_MAIN, w!("Show Main Window"))?;
+        let settings_text = wide_null(&state.settings_menu_text);
+        AppendMenuW(menu, MF_STRING, PET_MENU_SETTINGS, PCWSTR(settings_text.as_ptr()))?;
         AppendMenuW(menu, MF_STRING, PET_MENU_EXIT, w!("Exit"))?;
     }
 
@@ -605,6 +612,7 @@ fn show_context_menu(hwnd: HWND, state: &PetWindowState) -> Result<()> {
     match command {
         PET_MENU_START => post_pet_command(state.owner, PET_COMMAND_START),
         PET_MENU_SHOW_MAIN => post_pet_command(state.owner, PET_COMMAND_SHOW_MAIN),
+        PET_MENU_SETTINGS => post_pet_command(state.owner, PET_COMMAND_SETTINGS),
         PET_MENU_EXIT => post_pet_command(state.owner, PET_COMMAND_EXIT),
         _ => {}
     }
@@ -620,6 +628,10 @@ fn post_pet_command(owner: HWND, command: usize) {
             LPARAM(0),
         );
     }
+}
+
+fn wide_null(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain([0]).collect()
 }
 
 fn movement_exceeded(start: POINT, current: POINT) -> bool {

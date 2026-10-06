@@ -10,15 +10,19 @@ mod i18n;
 mod pet_window;
 #[allow(dead_code)]
 mod render;
+mod settings;
 mod speech_bubble;
 mod speech_bubble_window;
+mod timer_panel;
 mod tray_icon;
 mod ui;
 mod window_proc;
 
 use crate::asset::load_character_catalog;
-use crate::config::{Config, open_config_directory, set_tray_when_close, show_config_open_error};
+use crate::config::Config;
 use crate::pet_window::PetWindow;
+use crate::settings::create_settings_button;
+use crate::timer_panel::{create_timer_panel, register_timer_panel_class, resize_timer_panel};
 use windows::Win32::{
     Foundation::{HINSTANCE, RECT},
     System::LibraryLoader::GetModuleHandleW,
@@ -39,21 +43,19 @@ use windows::core::{Error, PCWSTR, Result, w};
 use i18n::{detect_language, main_window_title};
 use tray_icon::TrayIcon;
 use ui::{
-    button::{create_control_buttons, layout_control_buttons, register_button_class, update_control_buttons},
-    check_box::CheckBox,
-    component::Component,
+    button::{create_control_buttons, layout_control_buttons_for, register_button_class, update_control_buttons_for},
+    font::{common_gui_font, release_common_gui_fonts},
     gdi_plus::GdiPlus,
-    hyper_link_text::HyperLinkText,
     theme::apply_theme,
 };
-use window_proc::{WindowState, attach_window_state, layout_window_state, set_initial_remaining_seconds, window_proc};
+use window_proc::{
+    WindowState, attach_window_state, layout_window_state, process_settings_message, set_initial_remaining_seconds,
+    window_proc,
+};
 
 const WINDOW_WIDTH: i32 = 800;
 const WINDOW_HEIGHT: i32 = 533;
 const APP_ICON_RESOURCE_ID: usize = 1;
-const TRAY_CHECK_BOX_MARGIN_X: i32 = 28;
-const CONFIG_LINK_MARGIN_X: i32 = 28;
-const CONFIG_LINK_MARGIN_Y: i32 = 34;
 
 fn main() {
     let language = detect_language();
@@ -102,6 +104,7 @@ fn run() -> Result<()> {
     }
 
     register_button_class(instance)?;
+    register_timer_panel_class(instance)?;
 
     let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN | WS_VISIBLE;
     let ex_style = WINDOW_EX_STYLE::default();
@@ -125,7 +128,8 @@ fn run() -> Result<()> {
             None,
         )
     }?;
-
+    let timer_panel = create_timer_panel(hwnd, instance)?;
+    resize_timer_panel(timer_panel, hwnd)?;
     let gdi_plus = GdiPlus::new()?;
     let catalog = load_character_catalog(
         &gdi_plus,
@@ -145,38 +149,9 @@ fn run() -> Result<()> {
         animations,
         config.speech_bubble.clone(),
         config.pet_position.clone(),
+        settings_menu_text(language),
     )?;
-    create_control_buttons(hwnd, instance)?;
-    let config_link = HyperLinkText::create(
-        hwnd,
-        config_link_text(language),
-        move |hwnd| {
-            if let Err(error) = open_config_directory(hwnd) {
-                show_config_open_error(hwnd, &error, language);
-            }
-        },
-        layout_config_link,
-    )?;
-    let tray_check_box = CheckBox::create(
-        hwnd,
-        tray_check_box_text(language),
-        config.tray_when_close,
-        layout_tray_check_box,
-        move |hwnd, checked| {
-            if let Err(error) = set_tray_when_close(checked) {
-                let text: Vec<u16> = error.to_string().encode_utf16().chain([0]).collect();
-                let caption = wide_null(main_window_title(language));
-                unsafe {
-                    let _ = MessageBoxW(
-                        Some(hwnd),
-                        PCWSTR(text.as_ptr()),
-                        PCWSTR(caption.as_ptr()),
-                        MB_OK | MB_ICONERROR,
-                    );
-                }
-            }
-        },
-    )?;
+    let control_buttons = create_control_buttons(timer_panel, instance)?;
     let tray_icon = TrayIcon::create(
         hwnd,
         small_icon,
@@ -184,26 +159,32 @@ fn run() -> Result<()> {
         tray_menu_start_text(language),
         tray_menu_show_text(language),
         tray_menu_open_config_text(language),
+        settings_menu_text(language),
         tray_menu_about_text(language),
         tray_menu_exit_text(language),
     )?;
+    let common_gui_font = common_gui_font(dpi, language == i18n::Language::Chinese);
+    let settings_button = create_settings_button(hwnd, instance, settings_menu_text(language), common_gui_font);
     attach_window_state(
         hwnd,
         WindowState {
             language,
             theme,
             tray_icon,
-            tray_check_box: tray_check_box.clone(),
+            tray_when_close: config.tray_when_close,
             pet_window,
-            components: vec![
-                Box::new(config_link) as Box<dyn Component>,
-                Box::new(tray_check_box) as Box<dyn Component>,
-            ],
+            components: Vec::new(),
+            common_gui_font,
+            settings_button,
+            settings_button_hovered: false,
+            settings_panel: windows::Win32::Foundation::HWND::default(),
+            timer_panel,
+            control_buttons,
         },
     );
-    layout_control_buttons(hwnd)?;
+    layout_control_buttons_for(timer_panel, &control_buttons)?;
     layout_window_state(hwnd)?;
-    update_control_buttons(hwnd, true, false, false)?;
+    update_control_buttons_for(&control_buttons, true, false, false);
     apply_theme(hwnd, theme)?;
 
     unsafe {
@@ -220,11 +201,17 @@ fn run() -> Result<()> {
             break;
         }
 
+        if process_settings_message(hwnd, &message) {
+            continue;
+        }
+
         unsafe {
             let _ = TranslateMessage(&message);
             DispatchMessageW(&message);
         }
     }
+
+    release_common_gui_fonts();
 
     Ok(())
 }
@@ -267,20 +254,6 @@ fn wide_null(value: &str) -> Vec<u16> {
     value.encode_utf16().chain([0]).collect()
 }
 
-fn config_link_text(language: i18n::Language) -> &'static str {
-    match language {
-        i18n::Language::Chinese => "打开配置目录",
-        i18n::Language::English => "Open config folder",
-    }
-}
-
-fn tray_check_box_text(language: i18n::Language) -> &'static str {
-    match language {
-        i18n::Language::Chinese => "关闭时缩小到系统托盘图标",
-        i18n::Language::English => "Minimize to system tray when closing",
-    }
-}
-
 fn tray_menu_show_text(language: i18n::Language) -> &'static str {
     match language {
         i18n::Language::Chinese => "显示主窗口",
@@ -316,45 +289,11 @@ fn tray_menu_about_text(language: i18n::Language) -> &'static str {
     }
 }
 
-fn layout_config_link(
-    link: &HyperLinkText,
-    parent: windows::Win32::Foundation::HWND,
-    dc: windows::Win32::Graphics::Gdi::HDC,
-) -> Result<()> {
-    let mut client_rect = RECT::default();
-    unsafe {
-        windows::Win32::UI::WindowsAndMessaging::GetClientRect(parent, &mut client_rect)?;
+fn settings_menu_text(language: i18n::Language) -> &'static str {
+    match language {
+        i18n::Language::Chinese => "设置",
+        i18n::Language::English => "Settings",
     }
-
-    let (width, height) = link.window_size(dc)?;
-    link.move_to(RECT {
-        left: client_rect.right - CONFIG_LINK_MARGIN_X - width,
-        top: client_rect.bottom - CONFIG_LINK_MARGIN_Y - height,
-        right: client_rect.right - CONFIG_LINK_MARGIN_X,
-        bottom: client_rect.bottom - CONFIG_LINK_MARGIN_Y,
-    })
-}
-
-fn layout_tray_check_box(
-    check_box: &CheckBox,
-    parent: windows::Win32::Foundation::HWND,
-    dc: windows::Win32::Graphics::Gdi::HDC,
-) -> Result<()> {
-    let mut client_rect = RECT::default();
-    unsafe {
-        windows::Win32::UI::WindowsAndMessaging::GetClientRect(parent, &mut client_rect)?;
-    }
-
-    let (width, height) = check_box.window_size(dc)?;
-    let bottom = client_rect.bottom - CONFIG_LINK_MARGIN_Y;
-    let top = bottom - height;
-
-    check_box.move_to(RECT {
-        left: client_rect.left + TRAY_CHECK_BOX_MARGIN_X,
-        top,
-        right: client_rect.left + TRAY_CHECK_BOX_MARGIN_X + width,
-        bottom: top + height,
-    })
 }
 
 fn load_app_icons(instance: HINSTANCE) -> (HICON, HICON) {

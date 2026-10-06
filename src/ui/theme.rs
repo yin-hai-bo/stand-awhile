@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use windows::Win32::{
     Foundation::{COLORREF, HWND, NO_ERROR, RECT},
     Graphics::{
-        Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute},
+        Dwm::{DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute},
         Gdi::{CreateSolidBrush, DeleteObject, FillRect, InvalidateRect},
     },
     System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW},
@@ -67,7 +67,17 @@ pub fn apply_theme(hwnd: HWND, theme: Theme) -> Result<()> {
     };
     IS_DARK_MODE.store(is_dark, Ordering::Relaxed);
 
+    apply_window_dark_mode(hwnd, is_dark)?;
+    unsafe {
+        let _ = InvalidateRect(Some(hwnd), None, true);
+    }
+
+    Ok(())
+}
+
+pub fn apply_window_dark_mode(hwnd: HWND, is_dark: bool) -> Result<()> {
     let dark_flag = if is_dark { 1i32 } else { 0i32 };
+    let text_color = if is_dark { DARK_TEXT } else { LIGHT_TEXT };
     unsafe {
         DwmSetWindowAttribute(
             hwnd,
@@ -75,10 +85,32 @@ pub fn apply_theme(hwnd: HWND, theme: Theme) -> Result<()> {
             &dark_flag as *const i32 as _,
             std::mem::size_of::<i32>() as u32,
         )?;
-        let _ = InvalidateRect(Some(hwnd), None, true);
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_TEXT_COLOR,
+            &text_color as *const COLORREF as _,
+            std::mem::size_of::<COLORREF>() as u32,
+        );
     }
-
+    apply_window_caption_color(hwnd, is_dark, true);
     Ok(())
+}
+
+pub fn apply_window_caption_color(hwnd: HWND, is_dark: bool, active: bool) {
+    let caption_color = match (is_dark, active) {
+        (true, true) => rgb(45, 45, 48),
+        (true, false) => rgb(38, 38, 42),
+        (false, true) => rgb(250, 250, 250),
+        (false, false) => rgb(230, 230, 230),
+    };
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_CAPTION_COLOR,
+            &caption_color as *const COLORREF as _,
+            std::mem::size_of::<COLORREF>() as u32,
+        );
+    }
 }
 
 pub fn paint_background(rect: &RECT, hdc: windows::Win32::Graphics::Gdi::HDC) -> Result<()> {

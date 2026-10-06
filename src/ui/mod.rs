@@ -1,5 +1,4 @@
 pub mod button;
-pub mod check_box;
 pub mod component;
 mod countdown;
 pub mod font;

@@ -16,7 +16,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     EnableWindow, IsWindowEnabled, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    BN_CLICKED, CREATESTRUCTW, CreateWindowExW, DefWindowProcW, GWLP_USERDATA, GetClientRect, GetDlgItem, GetParent,
+    BN_CLICKED, CREATESTRUCTW, CreateWindowExW, DefWindowProcW, GWLP_USERDATA, GetClientRect, GetParent,
     GetWindowLongPtrW, HCURSOR, HMENU, IDC_ARROW, IDC_HAND, LoadCursorW, MoveWindow, PostMessageW, RegisterClassW,
     SetCursor, SetWindowLongPtrW, WINDOW_EX_STYLE, WM_CAPTURECHANGED, WM_COMMAND, WM_ENABLE, WM_ERASEBKGND,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SETCURSOR, WNDCLASSW, WS_CHILD,
@@ -104,8 +104,12 @@ pub fn register_button_class(instance: HINSTANCE) -> Result<()> {
     Ok(())
 }
 
-pub fn create_control_buttons(parent: HWND, instance: HINSTANCE) -> Result<()> {
-    for button in [ControlButton::Play, ControlButton::Pause, ControlButton::Reset] {
+pub fn create_control_buttons(parent: HWND, instance: HINSTANCE) -> Result<[HWND; BUTTON_COUNT]> {
+    let mut windows = [HWND::default(); BUTTON_COUNT];
+    for (index, button) in [ControlButton::Play, ControlButton::Pause, ControlButton::Reset]
+        .into_iter()
+        .enumerate()
+    {
         let id = button_command_id(button);
         let hwnd = unsafe {
             CreateWindowExW(
@@ -127,45 +131,42 @@ pub fn create_control_buttons(parent: HWND, instance: HINSTANCE) -> Result<()> {
         if hwnd.0.is_null() {
             return Err(Error::from_win32());
         }
+        windows[index] = hwnd;
     }
 
-    Ok(())
+    Ok(windows)
 }
 
-pub fn layout_control_buttons(parent: HWND) -> Result<()> {
+pub fn layout_control_buttons_for(parent: HWND, buttons: &[HWND; BUTTON_COUNT]) -> Result<()> {
     for layout in control_button_layouts(parent)? {
-        let hwnd = child_button_window(parent, layout.kind)?;
+        let hwnd = buttons[button_index(layout.kind)];
         let width = layout.rect.right - layout.rect.left;
         let height = layout.rect.bottom - layout.rect.top;
         unsafe {
             MoveWindow(hwnd, layout.rect.left, layout.rect.top, width, height, true)?;
         }
     }
-
     Ok(())
 }
 
-pub fn update_control_buttons(
-    parent: HWND,
-    play_enabled: bool,
-    pause_enabled: bool,
-    reset_enabled: bool,
-) -> Result<()> {
-    set_button_enabled(parent, ControlButton::Play, play_enabled)?;
-    set_button_enabled(parent, ControlButton::Pause, pause_enabled)?;
-    set_button_enabled(parent, ControlButton::Reset, reset_enabled)?;
-    Ok(())
-}
-
-pub fn refresh_control_buttons(parent: HWND) -> Result<()> {
-    for button in [ControlButton::Play, ControlButton::Pause, ControlButton::Reset] {
-        let hwnd = child_button_window(parent, button)?;
+pub fn update_control_buttons_for(buttons: &[HWND; BUTTON_COUNT], play: bool, pause: bool, reset: bool) {
+    for (button, enabled) in [
+        (ControlButton::Play, play),
+        (ControlButton::Pause, pause),
+        (ControlButton::Reset, reset),
+    ] {
         unsafe {
-            let _ = InvalidateRect(Some(hwnd), None, false);
+            let _ = EnableWindow(buttons[button_index(button)], enabled);
         }
     }
+}
 
-    Ok(())
+pub fn refresh_control_buttons_for(buttons: &[HWND; BUTTON_COUNT]) {
+    for hwnd in buttons {
+        unsafe {
+            let _ = InvalidateRect(Some(*hwnd), None, false);
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -476,24 +477,6 @@ fn control_button_layouts(parent: HWND) -> Result<[ControlButtonLayout; BUTTON_C
     ])
 }
 
-fn child_button_window(parent: HWND, button: ControlButton) -> Result<HWND> {
-    unsafe { GetDlgItem(Some(parent), button_command_id(button)) }
-}
-
-fn set_button_enabled(parent: HWND, button: ControlButton, enabled: bool) -> Result<()> {
-    let hwnd = child_button_window(parent, button)?;
-    if is_button_enabled(hwnd) == enabled {
-        return Ok(());
-    }
-
-    unsafe {
-        let _ = EnableWindow(hwnd, enabled);
-        let _ = InvalidateRect(Some(hwnd), None, false);
-    }
-
-    Ok(())
-}
-
 fn notify_parent_clicked(hwnd: HWND) {
     let Ok(parent) = (unsafe { GetParent(hwnd) }) else {
         return;
@@ -553,6 +536,14 @@ fn control_button_from_id(id: i32) -> Option<ControlButton> {
         PAUSE_BUTTON_ID => Some(ControlButton::Pause),
         RESET_BUTTON_ID => Some(ControlButton::Reset),
         _ => None,
+    }
+}
+
+fn button_index(button: ControlButton) -> usize {
+    match button {
+        ControlButton::Play => 0,
+        ControlButton::Pause => 1,
+        ControlButton::Reset => 2,
     }
 }
 

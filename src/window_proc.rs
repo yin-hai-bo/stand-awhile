@@ -5,33 +5,43 @@ use std::sync::{
 
 use crate::about::show_about_window;
 use crate::pet_window::{
-    PET_COMMAND_ACKNOWLEDGE, PET_COMMAND_EXIT, PET_COMMAND_SHOW_MAIN, PET_COMMAND_START, PetWindow, WM_PET_COMMAND,
+    PET_COMMAND_ACKNOWLEDGE, PET_COMMAND_EXIT, PET_COMMAND_SETTINGS, PET_COMMAND_SHOW_MAIN, PET_COMMAND_START,
+    PetWindow, WM_PET_COMMAND,
 };
+use crate::settings::{
+    SETTINGS_APPLIED_ID, SETTINGS_BUTTON_ID, SETTINGS_CHANGED_ID, SETTINGS_CLOSED_ID, create_settings_panel,
+    draw_settings_button, resize_settings_panel, save_settings_panel, set_settings_button_text,
+    update_settings_button_font, update_settings_panel_font,
+};
+use crate::timer_panel::resize_timer_panel;
+use crate::ui::font::common_gui_font;
 use crate::ui::{
     button::{
-        ControlButton, button_from_command, layout_control_buttons, refresh_control_buttons, update_control_buttons,
+        ControlButton, button_from_command, layout_control_buttons_for, refresh_control_buttons_for,
+        update_control_buttons_for,
     },
-    check_box::{CheckBox, invalidate_check_box_font, release_check_box_font},
     component::Component,
-    countdown_rect, draw_countdown,
-    hyper_link_text::{invalidate_hyper_link_text_font, release_hyper_link_text_font},
-    invalidate_countdown_font, release_countdown_font,
+    countdown_rect, invalidate_countdown_font, release_countdown_font,
     theme::{Theme, paint_background, refresh_theme},
 };
 use crate::{
-    config::{open_config_directory, show_config_open_error},
+    config::{Config, open_config_directory, show_config_open_error},
     i18n::Language,
-    tray_icon::{TRAY_MENU_ABOUT_ID, TRAY_MENU_OPEN_CONFIG_ID, TRAY_MENU_START_ID, TrayIcon, WM_TRAYICON},
+    tray_icon::{
+        TRAY_MENU_ABOUT_ID, TRAY_MENU_OPEN_CONFIG_ID, TRAY_MENU_SETTINGS_ID, TRAY_MENU_START_ID, TrayIcon, WM_TRAYICON,
+    },
 };
 
 use windows::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
-    Graphics::Gdi::{BeginPaint, EndPaint, GetDC, InvalidateRect, PAINTSTRUCT, ReleaseDC},
+    Graphics::Gdi::{BeginPaint, EndPaint, GetDC, HFONT, InvalidateRect, PAINTSTRUCT, ReleaseDC},
+    UI::HiDpi::GetDpiForWindow,
     UI::WindowsAndMessaging::{
-        DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetWindowLongPtrW, KillTimer, PostQuitMessage, SW_HIDE, SW_SHOW,
-        SWP_NOACTIVATE, SWP_NOZORDER, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-        WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_DPICHANGED, WM_NCDESTROY, WM_PAINT, WM_SETTINGCHANGE, WM_THEMECHANGED,
-        WM_TIMER,
+        DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetClientRect, GetWindowLongPtrW, HWND_TOP, IDC_HAND,
+        IsDialogMessageW, IsWindow, IsWindowVisible, KillTimer, LoadCursorW, MSG, MoveWindow, PostQuitMessage, SW_HIDE,
+        SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetCursor, SetForegroundWindow, SetTimer,
+        SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM,
+        WM_NCDESTROY, WM_PAINT, WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE, WM_THEMECHANGED, WM_TIMER,
     },
 };
 
@@ -50,9 +60,15 @@ pub struct WindowState {
     pub language: Language,
     pub theme: Theme,
     pub tray_icon: TrayIcon,
-    pub tray_check_box: CheckBox,
+    pub tray_when_close: bool,
     pub pet_window: PetWindow,
     pub components: Vec<Box<dyn Component>>,
+    pub common_gui_font: Option<HFONT>,
+    pub settings_button: HWND,
+    pub settings_button_hovered: bool,
+    pub settings_panel: HWND,
+    pub timer_panel: HWND,
+    pub control_buttons: [HWND; 3],
 }
 
 static INITIAL_REMAINING_SECONDS: AtomicU32 = AtomicU32::new(DEFAULT_INITIAL_REMAINING_SECONDS);
@@ -64,9 +80,24 @@ pub fn set_initial_remaining_seconds(seconds: u32) {
     REMAINING_SECONDS.store(seconds, Ordering::Relaxed);
 }
 
+pub fn remaining_seconds() -> u32 {
+    REMAINING_SECONDS.load(Ordering::Relaxed)
+}
+
 pub fn attach_window_state(hwnd: HWND, state: WindowState) {
     unsafe {
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(Box::new(state)) as isize);
+    }
+}
+
+pub fn process_settings_message(hwnd: HWND, message: &MSG) -> bool {
+    let Some(state) = window_state(hwnd) else {
+        return false;
+    };
+    if unsafe { IsWindowVisible(state.settings_panel).as_bool() } {
+        unsafe { IsDialogMessageW(state.settings_panel, message).as_bool() }
+    } else {
+        false
     }
 }
 
@@ -76,7 +107,6 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
             let mut paint = PAINTSTRUCT::default();
             let hdc = unsafe { BeginPaint(hwnd, &mut paint) };
             let _ = paint_background(&paint.rcPaint, hdc);
-            let _ = draw_countdown(hwnd, hdc, REMAINING_SECONDS.load(Ordering::Relaxed));
             unsafe {
                 let _ = EndPaint(hwnd, &paint);
             };
@@ -117,6 +147,7 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
             match wparam.0 {
                 PET_COMMAND_ACKNOWLEDGE => acknowledge_pet(hwnd),
                 PET_COMMAND_START => activate_button(hwnd, ControlButton::Play),
+                PET_COMMAND_SETTINGS => open_settings(hwnd),
                 PET_COMMAND_SHOW_MAIN => unsafe {
                     let _ = ShowWindow(hwnd, SW_SHOW);
                     let _ = SetForegroundWindow(hwnd);
@@ -129,6 +160,26 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
             LRESULT(0)
         }
         WM_COMMAND => {
+            match (wparam.0 & 0xFFFF) as usize {
+                SETTINGS_BUTTON_ID => {
+                    toggle_settings(hwnd);
+                    return LRESULT(0);
+                }
+                SETTINGS_APPLIED_ID => {
+                    apply_saved_settings(hwnd);
+                    show_timer_panel(hwnd);
+                    return LRESULT(0);
+                }
+                SETTINGS_CLOSED_ID => {
+                    show_timer_panel(hwnd);
+                    return LRESULT(0);
+                }
+                SETTINGS_CHANGED_ID => {
+                    apply_saved_settings(hwnd);
+                    return LRESULT(0);
+                }
+                _ => {}
+            }
             if handle_tray_menu_command(hwnd, wparam) {
                 return LRESULT(0);
             }
@@ -143,6 +194,45 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
             }
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
+        WM_DRAWITEM => {
+            if let Some(state) = window_state(hwnd) {
+                let item = unsafe { &*(lparam.0 as *const windows::Win32::UI::Controls::DRAWITEMSTRUCT) };
+                if item.CtlID as usize == SETTINGS_BUTTON_ID {
+                    let dark_mode = match state.theme {
+                        Theme::Dark => true,
+                        Theme::Light => false,
+                        Theme::System => crate::ui::theme::is_dark_mode().unwrap_or(false),
+                    };
+                    draw_settings_button(item, dark_mode, state.settings_button_hovered, state.common_gui_font);
+                    return LRESULT(1);
+                }
+            }
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
+        WM_SETCURSOR => {
+            if let Some(state) = window_state_mut(hwnd) {
+                let over_button = HWND(wparam.0 as _).0 == state.settings_button.0;
+                if over_button {
+                    if !state.settings_button_hovered {
+                        state.settings_button_hovered = true;
+                        unsafe {
+                            let _ = InvalidateRect(Some(state.settings_button), None, false);
+                        }
+                    }
+                    unsafe {
+                        let _ = SetCursor(Some(LoadCursorW(None, IDC_HAND).unwrap_or_default()));
+                    }
+                    return LRESULT(1);
+                }
+                if state.settings_button_hovered {
+                    state.settings_button_hovered = false;
+                    unsafe {
+                        let _ = InvalidateRect(Some(state.settings_button), None, false);
+                    }
+                }
+            }
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
         WM_TRAYICON => {
             if let Some(state) = window_state(hwnd) {
                 if state.tray_icon.handle_callback(hwnd, lparam).unwrap_or(false) {
@@ -153,10 +243,7 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
         }
         WM_CLOSE => {
             hide_pet(hwnd);
-            if window_state(hwnd)
-                .map(|state| state.tray_check_box.is_checked())
-                .unwrap_or(false)
-            {
+            if window_state(hwnd).map(|state| state.tray_when_close).unwrap_or(false) {
                 unsafe {
                     let _ = ShowWindow(hwnd, SW_HIDE);
                 }
@@ -166,9 +253,6 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
         }
         WM_DPICHANGED => {
             invalidate_countdown_font();
-            invalidate_check_box_font();
-            invalidate_hyper_link_text_font();
-
             let suggested_rect = unsafe { &*(lparam.0 as *const RECT) };
             unsafe {
                 let _ = SetWindowPos(
@@ -183,17 +267,48 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
                 let _ = InvalidateRect(Some(hwnd), None, false);
             }
 
-            let _ = layout_control_buttons(hwnd);
+            let dpi = (wparam.0 & 0xFFFF) as u32;
+            if let Some(state) = window_state(hwnd) {
+                let _ = resize_timer_panel(state.timer_panel, hwnd);
+                let _ = resize_settings_panel(state.settings_panel, hwnd);
+                let _ = layout_control_buttons_for(state.timer_panel, &state.control_buttons);
+            }
+            let chinese = window_state(hwnd)
+                .map(|state| state.language == crate::i18n::Language::Chinese)
+                .unwrap_or(false);
+            if let Some(state) = window_state_mut(hwnd) {
+                state.common_gui_font = common_gui_font(dpi, chinese);
+            }
+            if let Some(state) = window_state(hwnd) {
+                update_settings_button_font(state.settings_button, state.common_gui_font);
+                update_settings_panel_font(state.settings_panel, dpi);
+            }
             let _ = layout_window_state(hwnd);
-            let _ = refresh_control_buttons(hwnd);
+            if let Some(state) = window_state(hwnd) {
+                refresh_control_buttons_for(&state.control_buttons);
+            }
 
+            LRESULT(0)
+        }
+        WM_SIZE => {
+            if let Some(state) = window_state(hwnd) {
+                let _ = resize_timer_panel(state.timer_panel, hwnd);
+                let _ = resize_settings_panel(state.settings_panel, hwnd);
+                let _ = layout_control_buttons_for(state.timer_panel, &state.control_buttons);
+            }
+            layout_settings_button(hwnd);
             LRESULT(0)
         }
         WM_SETTINGCHANGE | WM_THEMECHANGED => {
             if let Some(state) = window_state(hwnd) {
                 refresh_theme(hwnd, state.theme);
+                unsafe {
+                    let _ = InvalidateRect(Some(state.settings_button), None, false);
+                }
             }
-            let _ = refresh_control_buttons(hwnd);
+            if let Some(state) = window_state(hwnd) {
+                refresh_control_buttons_for(&state.control_buttons);
+            }
             refresh_window_state(hwnd);
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
@@ -204,9 +319,7 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
             }
             unsafe {
                 let _ = KillTimer(Some(hwnd), TIMER_ID);
-                release_check_box_font();
                 release_countdown_font();
-                release_hyper_link_text_font();
                 PostQuitMessage(0);
             };
             LRESULT(0)
@@ -220,12 +333,15 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
 }
 
 unsafe fn invalidate_countdown(hwnd: HWND, remaining_seconds: u32) {
-    let hdc = unsafe { GetDC(Some(hwnd)) };
+    let Some(timer_panel) = window_state(hwnd).map(|state| state.timer_panel) else {
+        return;
+    };
+    let hdc = unsafe { GetDC(Some(timer_panel)) };
     if !hdc.is_invalid() {
-        if let Ok(rect) = countdown_rect(hwnd, hdc, remaining_seconds) {
-            let _ = unsafe { InvalidateRect(Some(hwnd), Some(&rect), false) };
+        if let Ok(rect) = countdown_rect(timer_panel, hdc, remaining_seconds) {
+            let _ = unsafe { InvalidateRect(Some(timer_panel), Some(&rect), false) };
         }
-        let _ = unsafe { ReleaseDC(Some(hwnd), hdc) };
+        let _ = unsafe { ReleaseDC(Some(timer_panel), hdc) };
     }
 }
 
@@ -271,12 +387,13 @@ fn sync_control_button_enabled(hwnd: HWND) -> windows::core::Result<()> {
     let timer_state = *TIMER_STATE.lock().expect("timer state mutex poisoned");
     let remaining = REMAINING_SECONDS.load(Ordering::Relaxed);
 
-    update_control_buttons(
-        hwnd,
+    update_control_buttons_for(
+        &window_state(hwnd).expect("window state missing").control_buttons,
         play_enabled(timer_state),
         pause_enabled(timer_state),
         reset_enabled(remaining),
-    )
+    );
+    Ok(())
 }
 
 fn play_enabled(timer_state: TimerState) -> bool {
@@ -346,6 +463,7 @@ pub fn layout_window_state(hwnd: HWND) -> windows::core::Result<()> {
     let Some(state) = window_state(hwnd) else {
         return Ok(());
     };
+    layout_settings_button(hwnd);
 
     let hdc = unsafe { GetDC(Some(hwnd)) };
     if hdc.is_invalid() {
@@ -364,6 +482,46 @@ pub fn layout_window_state(hwnd: HWND) -> windows::core::Result<()> {
     result
 }
 
+fn layout_settings_button(hwnd: HWND) {
+    let Some(state) = window_state(hwnd) else {
+        return;
+    };
+    if state.settings_button == HWND::default() {
+        return;
+    }
+    let mut rect = RECT::default();
+    unsafe {
+        if GetClientRect(hwnd, &mut rect).is_err() {
+            return;
+        }
+    }
+    let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
+    let scale = |value: i32| value * dpi as i32 / 96;
+    let width = scale(96);
+    let height = scale(32);
+    let right_margin = scale(24);
+    let bottom_margin = scale(32);
+    unsafe {
+        let _ = MoveWindow(
+            state.settings_button,
+            rect.right - right_margin - width,
+            rect.bottom - bottom_margin - height,
+            width,
+            height,
+            true,
+        );
+        let _ = SetWindowPos(
+            state.settings_button,
+            Some(HWND_TOP),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
+}
+
 fn refresh_window_state(hwnd: HWND) {
     if let Some(state) = window_state(hwnd) {
         for component in &state.components {
@@ -375,6 +533,11 @@ fn refresh_window_state(hwnd: HWND) {
 fn window_state(hwnd: HWND) -> Option<&'static WindowState> {
     let raw = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const WindowState;
     unsafe { raw.as_ref() }
+}
+
+fn window_state_mut(hwnd: HWND) -> Option<&'static mut WindowState> {
+    let raw = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut WindowState;
+    unsafe { raw.as_mut() }
 }
 
 fn release_window_state(hwnd: HWND) {
@@ -389,6 +552,10 @@ fn release_window_state(hwnd: HWND) {
 
 fn handle_tray_menu_command(hwnd: HWND, wparam: WPARAM) -> bool {
     match (wparam.0 & 0xFFFF) as usize {
+        TRAY_MENU_SETTINGS_ID => {
+            open_settings(hwnd);
+            true
+        }
         TRAY_MENU_START_ID => {
             activate_button(hwnd, ControlButton::Play);
             true
@@ -410,5 +577,123 @@ fn handle_tray_menu_command(hwnd: HWND, wparam: WPARAM) -> bool {
             true
         }
         _ => false,
+    }
+}
+
+fn open_settings(hwnd: HWND) {
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_SHOW);
+        let _ = SetForegroundWindow(hwnd);
+    }
+    let Some(state) = window_state(hwnd) else {
+        return;
+    };
+    unsafe {
+        let _ = ShowWindow(state.timer_panel, SW_HIDE);
+        let _ = SetWindowPos(
+            state.settings_button,
+            Some(HWND_TOP),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
+    set_settings_button_text_for(hwnd, true);
+    if unsafe { IsWindow(Some(state.settings_panel)).as_bool() } {
+        let _ = resize_settings_panel(state.settings_panel, hwnd);
+        unsafe {
+            let _ = ShowWindow(state.settings_panel, SW_SHOW);
+        }
+        return;
+    }
+    let Ok(config) = Config::load() else {
+        return;
+    };
+    let font = state.common_gui_font;
+    let instance = unsafe { windows::Win32::System::LibraryLoader::GetModuleHandleW(None) }
+        .unwrap_or_default()
+        .into();
+    if let Ok(panel) = create_settings_panel(hwnd, instance, config, font) {
+        if let Some(state) = window_state_mut(hwnd) {
+            state.settings_panel = panel;
+            let _ = resize_settings_panel(panel, hwnd);
+            unsafe {
+                let _ = SetWindowPos(
+                    state.settings_button,
+                    Some(HWND_TOP),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+            }
+        }
+    }
+}
+
+fn show_timer_panel(hwnd: HWND) {
+    if let Some(state) = window_state(hwnd) {
+        set_settings_button_text_for(hwnd, false);
+        unsafe {
+            let _ = ShowWindow(state.timer_panel, SW_SHOW);
+        }
+    }
+}
+
+fn toggle_settings(hwnd: HWND) {
+    let Some(state) = window_state(hwnd) else {
+        return;
+    };
+    let settings_visible = unsafe { IsWindowVisible(state.settings_panel).as_bool() };
+    if !settings_visible {
+        open_settings(hwnd);
+        return;
+    }
+
+    if save_settings_panel(state.settings_panel).is_ok() {
+        apply_saved_settings(hwnd);
+        unsafe {
+            let _ = DestroyWindow(state.settings_panel);
+        }
+    }
+}
+
+fn set_settings_button_text_for(hwnd: HWND, settings_visible: bool) {
+    if let Some(state) = window_state(hwnd) {
+        let text = if settings_visible {
+            settings_back_text(state.language)
+        } else {
+            settings_menu_text(state.language)
+        };
+        set_settings_button_text(state.settings_button, text);
+    }
+}
+
+fn apply_saved_settings(hwnd: HWND) {
+    let Ok(config) = Config::load() else {
+        return;
+    };
+    set_initial_remaining_seconds(config.period);
+    if let Some(state) = window_state_mut(hwnd) {
+        state.tray_when_close = config.tray_when_close;
+        state.theme = config.theme();
+        refresh_theme(hwnd, state.theme);
+    }
+}
+
+fn settings_menu_text(language: Language) -> &'static str {
+    match language {
+        Language::Chinese => "设置",
+        Language::English => "Settings",
+    }
+}
+
+fn settings_back_text(language: Language) -> &'static str {
+    match language {
+        Language::Chinese => "< 返回",
+        Language::English => "< Back",
     }
 }
