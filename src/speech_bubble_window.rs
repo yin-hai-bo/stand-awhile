@@ -497,9 +497,14 @@ impl SpeechBubbleController {
         })
     }
 
-    pub fn update(&mut self, position: (i32, i32), size: (i32, i32), now: std::time::Instant) -> Result<()> {
+    pub fn update(&mut self, position: (i32, i32), size: (i32, i32), now: std::time::Instant) -> Result<bool> {
         let text = self.player.update(now).then(|| pet_reminder_text(self.language));
-        self.window.update(position, size, text)
+        self.window.update(position, size, text)?;
+        Ok(self.is_visible())
+    }
+
+    pub fn is_visible(&self) -> bool {
+        state_mut(self.window.hwnd).is_some_and(|state| state.visible)
     }
 
     pub fn set_language(&mut self, language: Language) -> Result<()> {

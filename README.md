@@ -46,6 +46,10 @@ Click the Pet to hide it and start a new countdown. Its speech bubble shows a
 fixed reminder and this click instruction in the selected application language
 (Chinese or English). Bubble text and timing are built in; the former
 `speech_bubble` configuration is ignored and removed when configuration is saved.
+The Pet starts with its Walk animation, switches to Idle while the bubble is
+visible, and returns to Walk when the bubble disappears.
+When a countdown ends, the Pet flies in from the nearest top or bottom screen
+edge with Jump, then switches to Walk before the bubble cycle starts.
 
 The configuration file is available from the application's **Open config folder**
 link or tray menu. Set `"character": "dog"` to use the Dog Pet; the default is

@@ -440,8 +440,7 @@ fn stop_timer(hwnd: HWND) {
 
 fn notify_timer_finished(hwnd: HWND) {
     if let Some(state) = window_state(hwnd) {
-        state.pet_window.show();
-        let _ = state.pet_window.play_jump();
+        let _ = state.pet_window.show_reminder();
     }
 }
 
