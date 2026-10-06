@@ -1200,6 +1200,29 @@ mod tests {
     }
 
     #[test]
+    fn showing_reminder_restores_hidden_pet_and_cancels_in_progress_exit() {
+        use super::*;
+        use windows::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+        let pet = hidden_test_pet();
+        pet.show_reminder().unwrap();
+        assert!(unsafe { IsWindowVisible(pet.hwnd).as_bool() });
+        assert_eq!(state_mut(pet.hwnd).unwrap().active_clip, ActiveClip::Jump);
+
+        let target = state_mut(pet.hwnd).unwrap().show_animation.as_ref().unwrap().target;
+        pet.hide_animated().unwrap();
+        let state = state_mut(pet.hwnd).unwrap();
+        state.hide_animation.as_mut().unwrap().started_at = Instant::now() - Duration::from_millis(90);
+        update_hide_animation(pet.hwnd, state).unwrap();
+        pet.show_reminder().unwrap();
+        let state = state_mut(pet.hwnd).unwrap();
+        assert!(unsafe { IsWindowVisible(pet.hwnd).as_bool() });
+        assert!(state.hide_animation.is_none());
+        assert_eq!(state.active_clip, ActiveClip::Jump);
+        assert_eq!(state.show_animation.as_ref().unwrap().target, target);
+        assert!(!state.speech_bubble.is_visible());
+    }
+
+    #[test]
     fn reminder_enters_with_jump_then_walk_before_the_bubble() {
         use super::*;
         use crate::animation::{AnimationClip, Frame, LoopMode};

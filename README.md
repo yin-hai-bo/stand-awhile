@@ -64,7 +64,7 @@ Later starts do not automatically hide it, including after pause or reset.
 This behavior is independent of the close-to-tray setting.
 
 Pause stops the countdown and hides the Pet. Reset restores the configured
-interval, stops the countdown, and keeps the Pet hidden. Closing the main window
+interval, stops the countdown, and brings the Pet back with Jump. Closing the main window
 exits by default. Enable **Minimize to tray** in Settings to hide only the main
 window; the countdown and any visible Pet reminder continue.
 

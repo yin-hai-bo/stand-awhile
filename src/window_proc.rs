@@ -159,7 +159,7 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
                 if current_remaining == 0 {
                     *TIMER_STATE.lock().expect("timer state mutex poisoned") = TimerState::Finished;
                     stop_timer(hwnd);
-                    notify_timer_finished(hwnd);
+                    show_pet_reminder(hwnd);
                 }
 
                 let _ = sync_control_button_enabled(hwnd);
@@ -421,11 +421,11 @@ fn activate_button(hwnd: HWND, button: ControlButton, source: StartSource) {
             stop_timer(hwnd);
         }
         ControlButton::Reset => {
-            hide_pet(hwnd);
             let initial_remaining = initial_remaining_seconds();
             let previous_remaining = REMAINING_SECONDS.swap(initial_remaining, Ordering::Relaxed);
             *TIMER_STATE.lock().expect("timer state mutex poisoned") = TimerState::NotStarted;
             stop_timer(hwnd);
+            show_pet_reminder(hwnd);
             unsafe {
                 invalidate_countdown(hwnd, previous_remaining);
                 invalidate_countdown(hwnd, initial_remaining);
@@ -476,7 +476,7 @@ fn stop_timer(hwnd: HWND) {
     }
 }
 
-fn notify_timer_finished(hwnd: HWND) {
+fn show_pet_reminder(hwnd: HWND) {
     if let Some(state) = window_state(hwnd) {
         let _ = state.pet_window.show_reminder();
     }
