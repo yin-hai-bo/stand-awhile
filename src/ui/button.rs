@@ -12,6 +12,7 @@ use windows::Win32::Graphics::GdiPlus::{
     SmoothingModeAntiAlias, Status, UnitPixel,
 };
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
+use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     EnableWindow, IsWindowEnabled, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
 };
@@ -371,7 +372,8 @@ fn draw_button_window(hwnd: HWND, hdc: HDC, state: &ButtonWindowState) -> Result
         GetClientRect(hwnd, &mut client_rect)?;
     }
 
-    let button_rect = inset_rect(client_rect, BUTTON_PADDING);
+    let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
+    let button_rect = inset_rect(client_rect, scale_dimension(BUTTON_PADDING, dpi));
     let graphics = GdiPlusGraphics::from_hdc(hdc)?;
 
     draw_control_button(
@@ -383,6 +385,7 @@ fn draw_button_window(hwnd: HWND, hdc: HDC, state: &ButtonWindowState) -> Result
         is_button_enabled(hwnd),
         state.hovered,
         state.pressed,
+        dpi,
     )
 }
 
@@ -442,25 +445,31 @@ fn control_button_layouts(parent: HWND) -> Result<[ControlButtonLayout; BUTTON_C
     let mut client_rect = RECT::default();
     unsafe { GetClientRect(parent, &mut client_rect)? };
 
+    let dpi = unsafe { GetDpiForWindow(parent) }.max(96);
+    Ok(button_layouts_for_rect(client_rect, dpi))
+}
+
+fn button_layouts_for_rect(client_rect: RECT, dpi: u32) -> [ControlButtonLayout; BUTTON_COUNT] {
     let client_width = client_rect.right - client_rect.left;
     let client_height = client_rect.bottom - client_rect.top;
-    let diameter = (client_width.min(client_height) / 8).clamp(48, 68);
+    let diameter = (client_width.min(client_height) / 8).clamp(scale_dimension(48, dpi), scale_dimension(68, dpi));
     let spacing = (diameter * 32) / 100;
     let total_width = diameter * BUTTON_COUNT as i32 + spacing * (BUTTON_COUNT as i32 - 1);
     let left = client_rect.left + (client_width - total_width) / 2;
     let top = client_rect.top + client_height * 58 / 100;
-    let window_size = diameter + BUTTON_PADDING * 2;
+    let padding = scale_dimension(BUTTON_PADDING, dpi);
+    let window_size = diameter + padding * 2;
 
-    Ok([
+    [
         ControlButtonLayout {
             kind: ControlButton::Play,
-            rect: rect_from_origin(left - BUTTON_PADDING, top - BUTTON_PADDING, window_size, window_size),
+            rect: rect_from_origin(left - padding, top - padding, window_size, window_size),
         },
         ControlButtonLayout {
             kind: ControlButton::Pause,
             rect: rect_from_origin(
-                left + diameter + spacing - BUTTON_PADDING,
-                top - BUTTON_PADDING,
+                left + diameter + spacing - padding,
+                top - padding,
                 window_size,
                 window_size,
             ),
@@ -468,13 +477,13 @@ fn control_button_layouts(parent: HWND) -> Result<[ControlButtonLayout; BUTTON_C
         ControlButtonLayout {
             kind: ControlButton::Reset,
             rect: rect_from_origin(
-                left + (diameter + spacing) * 2 - BUTTON_PADDING,
-                top - BUTTON_PADDING,
+                left + (diameter + spacing) * 2 - padding,
+                top - padding,
                 window_size,
                 window_size,
             ),
         },
-    ])
+    ]
 }
 
 fn notify_parent_clicked(hwnd: HWND) {
@@ -500,7 +509,11 @@ fn point_in_button(hwnd: HWND, lparam: LPARAM) -> bool {
         return false;
     }
 
-    let rect = inset_rect(client_rect, BUTTON_PADDING);
+    let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
+    point_in_circle(inset_rect(client_rect, scale_dimension(BUTTON_PADDING, dpi)), x, y)
+}
+
+fn point_in_circle(rect: RECT, x: i32, y: i32) -> bool {
     let center_x = (rect.left + rect.right) / 2;
     let center_y = (rect.top + rect.bottom) / 2;
     let radius = (rect.right - rect.left) / 2;
@@ -572,17 +585,22 @@ fn inset_rect(rect: RECT, amount: i32) -> RECT {
     }
 }
 
+fn scale_dimension(value: i32, dpi: u32) -> i32 {
+    value * dpi as i32 / 96
+}
+
 fn draw_control_button(
     graphics: &GdiPlusGraphics,
     layout: ControlButtonLayout,
     enabled: bool,
     hovered: bool,
     pressed: bool,
+    dpi: u32,
 ) -> Result<()> {
     let prominent = !matches!(layout.kind, ControlButton::Reset);
     let colors = current_button_colors(enabled, prominent, hovered, pressed);
     let fill_brush = GdiPlusBrush::solid(colors.fill)?;
-    let border_pen = GdiPlusPen::new(colors.border, BUTTON_BORDER_WIDTH, true)?;
+    let border_pen = GdiPlusPen::new(colors.border, BUTTON_BORDER_WIDTH * dpi as f32 / 96.0, true)?;
     let width = layout.rect.right - layout.rect.left;
     let height = layout.rect.bottom - layout.rect.top;
 
@@ -607,8 +625,8 @@ fn draw_control_button(
 
     match layout.kind {
         ControlButton::Play => draw_play_icon(graphics, layout.rect, colors.icon)?,
-        ControlButton::Pause => draw_pause_icon(graphics, layout.rect, colors.icon)?,
-        ControlButton::Reset => draw_reset_icon(graphics, layout.rect, colors.icon)?,
+        ControlButton::Pause => draw_pause_icon(graphics, layout.rect, colors.icon, dpi)?,
+        ControlButton::Reset => draw_reset_icon(graphics, layout.rect, colors.icon, dpi)?,
     }
 
     Ok(())
@@ -655,11 +673,11 @@ fn draw_play_icon(graphics: &GdiPlusGraphics, rect: RECT, color: COLORREF) -> Re
     fill_polygon(graphics, &points, color)
 }
 
-fn draw_pause_icon(graphics: &GdiPlusGraphics, rect: RECT, color: COLORREF) -> Result<()> {
+fn draw_pause_icon(graphics: &GdiPlusGraphics, rect: RECT, color: COLORREF, dpi: u32) -> Result<()> {
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
-    let bar_width = (width * 12 / 100).max(6);
-    let gap = (width * 10 / 100).max(6);
+    let bar_width = (width * 12 / 100).max(scale_dimension(6, dpi));
+    let gap = (width * 10 / 100).max(scale_dimension(6, dpi));
     let top = rect.top + height * 28 / 100;
     let bottom = rect.top + height * 72 / 100;
     let left_bar_left = rect.left + width * 34 / 100;
@@ -677,13 +695,13 @@ fn draw_pause_icon(graphics: &GdiPlusGraphics, rect: RECT, color: COLORREF) -> R
     )
 }
 
-fn draw_reset_icon(graphics: &GdiPlusGraphics, rect: RECT, color: COLORREF) -> Result<()> {
+fn draw_reset_icon(graphics: &GdiPlusGraphics, rect: RECT, color: COLORREF, dpi: u32) -> Result<()> {
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
     let center_x = (rect.left + rect.right) / 2;
     let center_y = (rect.top + rect.bottom) / 2;
     let radius = width.min(height) * 24 / 100;
-    let pen = GdiPlusPen::new(color, 3.0, true)?;
+    let pen = GdiPlusPen::new(color, 3.0 * dpi as f32 / 96.0, true)?;
     let arc_left = center_x - radius;
     let arc_top = center_y - radius;
     let arc_size = radius * 2;
@@ -830,7 +848,40 @@ impl Drop for GdiPlusPen {
 
 #[cfg(test)]
 mod tests {
-    use super::{ControlButton, rect_from_origin};
+    use super::*;
+
+    #[test]
+    fn button_layout_and_hit_area_follow_dpi_changes() {
+        for dpi in [96, 120, 144, 192, 96] {
+            // Exercise both the minimum and maximum diameter constraints.
+            for (width, height, diameter) in [(480, 384, 48), (800, 600, 68)] {
+                let panel = rect_from_origin(0, 0, scale_dimension(width, dpi), scale_dimension(height, dpi));
+                let layouts = button_layouts_for_rect(panel, dpi);
+                let padding = scale_dimension(BUTTON_PADDING, dpi);
+                let expected_diameter = scale_dimension(diameter, dpi);
+                let first = layouts[0].rect;
+                let last = layouts[2].rect;
+                assert!((first.left + last.right - panel.right).abs() <= 1);
+                for (index, layout) in layouts.iter().enumerate() {
+                    assert_eq!(button_index(layout.kind), index);
+                    assert_eq!(layout.rect.right - layout.rect.left, expected_diameter + padding * 2);
+                    assert_eq!(layout.rect.bottom - layout.rect.top, expected_diameter + padding * 2);
+                    assert_eq!(layout.rect.top + padding, panel.bottom * 58 / 100);
+                    let circle = inset_rect(layout.rect, padding);
+                    let cx = (circle.left + circle.right) / 2;
+                    let cy = (circle.top + circle.bottom) / 2;
+                    assert!(point_in_circle(circle, cx, cy));
+                    assert!(point_in_circle(circle, cx + expected_diameter / 2, cy));
+                    assert!(!point_in_circle(circle, cx + expected_diameter / 2 + 1, cy));
+                    assert!(!point_in_circle(circle, layout.rect.left, layout.rect.top));
+                    assert!(layout.rect.bottom <= panel.bottom);
+                }
+                for pair in layouts.windows(2) {
+                    assert!(pair[0].rect.right < pair[1].rect.left);
+                }
+            }
+        }
+    }
 
     #[test]
     fn builds_rect_from_origin() {

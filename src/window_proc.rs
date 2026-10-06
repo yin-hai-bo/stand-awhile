@@ -285,6 +285,9 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
                 let _ = resize_timer_panel(state.timer_panel, hwnd);
                 let _ = resize_settings_panel(state.settings_panel, hwnd);
                 let _ = layout_control_buttons_for(state.timer_panel, &state.control_buttons);
+                unsafe {
+                    let _ = InvalidateRect(Some(state.timer_panel), None, false);
+                }
             }
             let chinese = window_state(hwnd)
                 .map(|state| state.language == crate::i18n::Language::Chinese)
