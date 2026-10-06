@@ -173,6 +173,7 @@ fn run() -> Result<()> {
             tray_icon,
             tray_when_close: config.tray_when_close,
             pet_window,
+            character_catalog: catalog,
             components: Vec::new(),
             common_gui_font,
             settings_button,

@@ -227,6 +227,25 @@ impl PetWindow {
             let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
         }
     }
+
+    pub fn set_animations(&self, animations: CharacterAnimations) -> Result<()> {
+        let state = state_mut(self.hwnd).ok_or_else(Error::from_win32)?;
+        let (width, height) = {
+            let frame = &animations.idle.frames[0];
+            (frame.width, frame.height)
+        };
+        state.idle = animations.idle;
+        state.walk = animations.walk;
+        state.jump = animations.jump;
+        state.active_clip = ActiveClip::Idle;
+        state.player = AnimationPlayer::new(state.idle.clip.clone());
+        state.player.play(Instant::now());
+        state.last_frame = None;
+        state.surface = PixelSurface::new(width, height).map_err(|_| Error::from_win32())?;
+        let position = state.position;
+        set_position(self.hwnd, state, position)?;
+        update_frame(state)
+    }
 }
 
 fn begin_hide_animation(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {

@@ -4,6 +4,7 @@ use std::sync::{
 };
 
 use crate::about::show_about_window;
+use crate::asset::CharacterCatalog;
 use crate::pet_window::{
     PET_COMMAND_ACKNOWLEDGE, PET_COMMAND_EXIT, PET_COMMAND_SETTINGS, PET_COMMAND_SHOW_MAIN, PET_COMMAND_START,
     PetWindow, WM_PET_COMMAND,
@@ -62,6 +63,7 @@ pub struct WindowState {
     pub tray_icon: TrayIcon,
     pub tray_when_close: bool,
     pub pet_window: PetWindow,
+    pub character_catalog: CharacterCatalog,
     pub components: Vec<Box<dyn Component>>,
     pub common_gui_font: Option<HFONT>,
     pub settings_button: HWND,
@@ -682,6 +684,13 @@ fn apply_saved_settings(hwnd: HWND) {
         state.theme = config.theme();
         refresh_theme(hwnd, state.theme);
         refresh_settings_panel_theme(state.settings_panel, &config);
+        if let Some(animations) = state
+            .character_catalog
+            .get(&config.character)
+            .or_else(|| state.character_catalog.get("cat"))
+        {
+            let _ = state.pet_window.set_animations(animations.clone());
+        }
     }
 }
 
