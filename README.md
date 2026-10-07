@@ -21,6 +21,8 @@ It reminds you to take a movement break without taking focus away from your work
   - Choose the Pet character (`cat` or `dog`)
   - Choose the application language and theme
   - Choose whether closing the main window exits or hides it to the tray
+  - Choose whether starting the timer hides the main window
+  - Enable a hidden countdown at Windows sign-in
 - 🖥 **Native Experience**: Pure Windows application, no browser dependencies
 
 ---
@@ -67,21 +69,36 @@ Click the Pet to hide it and start a new countdown. Its speech bubble shows a
 fixed reminder and this click instruction in the selected application language
 (Chinese or English). Bubble text and timing are built in; the former
 `speech_bubble` configuration is ignored and removed when configuration is saved.
-The Pet starts with its Walk animation, switches to Idle while the bubble is
-visible, and returns to Walk when the bubble disappears.
 When a countdown ends, the Pet flies in from the nearest top or bottom screen
-edge with Jump, then switches to Walk before the bubble cycle starts.
+edge with Jump, then switches to Walk. After a 500 ms delay, the bubble appears
+for 5 seconds and stays hidden for 10 seconds, repeating until interrupted.
+The Pet switches to Idle while the bubble is visible and returns to Walk
+when it disappears.
 
-On the first countdown start of each app session, clicking the Pet or choosing
-**Start** from either the Pet or tray menu also hides the main window to the
-tray. Starting with the main window's Play button keeps the window visible.
-Later starts do not automatically hide it, including after pause or reset.
-This behavior is independent of the close-to-tray setting.
+**Auto-hide main window when starting the timer** is enabled by default.
+When enabled, every start or resume hides the main window, whether initiated
+by Play, a Pet or tray menu, or clicking the Pet reminder. When disabled,
+these actions keep the main window's current visibility. Changing the option
+does not hide the window immediately. This behavior is independent of the
+close-to-tray setting; the tray can restore the main window at any time.
 
 Pause stops the countdown and hides the Pet. Reset restores the configured
-interval, stops the countdown, and keeps the Pet hidden. Closing the main window
-exits by default. Enable **Minimize to tray** in Settings to hide only the main
-window; the countdown and any visible Pet reminder continue.
+interval, stops the countdown, and keeps the Pet hidden. At completion, the
+display returns to the configured interval and Reset is disabled; Play starts
+a full countdown again. Closing the main window hides it to the tray by
+default; the countdown and any visible Pet reminder continue. Select
+**Exit program** in Settings to exit when closing, or use **Exit** from the
+tray or Pet menu.
+
+The countdown is a movement reminder and accepts occasional delays of a few
+seconds to ten or more seconds. Exact wall-clock timing is not required;
+see [the timing design decision](docs/adr/0003-countdown-timing-tolerance.md).
+
+Tab navigation in the main window follows Play, Pause, Reset, auto-hide,
+About, and Settings, skipping disabled buttons. Shift+Tab moves backward.
+The timer buttons support Space and Enter; the footer buttons support Space.
+Opening Settings from either menu, or choosing **Show main window** from the
+tray or Pet menu, also restores a minimized main window.
 
 ### Settings and Configuration
 
@@ -102,8 +119,13 @@ separate enabled/disabled status for startup apps.
 Settings accepts whole minutes (at least 1), converted to seconds when you click
 **Back**. Existing intervals are displayed rounded up to minutes; leaving the
 input unchanged preserves the original seconds. The countdown always displays
-the exact seconds. Changing the interval replaces the remaining countdown;
-changing other settings preserves it.
+the exact stored seconds: for example, a configured 30 seconds appears as
+1 in Settings and `00:30` in the countdown. Edited input is normalized to the
+range 1 to 71,582,788 minutes; empty or unparseable input becomes 1.
+Changing the interval replaces the remaining countdown;
+changing other settings preserves it. On entry, focus is in the minutes input.
+Tab navigation includes **Reset to defaults** and **Back**, then cycles back
+to the input. Enter/Escape in the input do not open Settings or About.
 
 Click **Reset to defaults** to the left of **Back** to immediately save and
 apply default settings, including a 20-minute interval, while preserving the
@@ -121,7 +143,13 @@ the file, then restart. Omitted or null fields use the defaults below.
 | `language` | `"auto"` | `"auto"`, `"zh"`, or `"en"`; Auto follows the Windows UI language, using Chinese for Chinese locales and English otherwise |
 | `theme` | `"system"` | `"system"`, `"light"`, or `"dark"` |
 | `tray_when_close` | `true` | `true` hides the main window on close; `false` exits |
+| `auto_hide_on_start` | `true` | Hides the main window on every timer start or resume; background startup stays hidden regardless |
 | `launch_at_startup` | `false` | Registers Windows sign-in startup with `--autostart`, starting a hidden background countdown |
+
+While the countdown is running, the tray tooltip is **站一站（计时中）** or
+**Stand Awhile (Timing)**. When paused, reset, or finished, it shows the
+application name. Language changes and Explorer restarts retain the current
+tooltip language and timer status.
 
 Runtime information is stored separately in the UTF-8 file
 `%LOCALAPPDATA%\yinhaibo\stand-awhile\state.json`.
@@ -165,7 +193,7 @@ For development checks, run:
 
 ```powershell
 cargo fmt -- --check
-cargo test
+cargo test -- --test-threads=1
 cargo build
 ```
 
