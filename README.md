@@ -39,7 +39,7 @@ It reminds you to take a movement break without taking focus away from your work
 1. Go to the [Releases](https://github.com/yin-hai-bo/stand-awhile/releases) page
 2. Download the executable (extract it first if distributed in an archive)
 3. Run `stand-awhile.exe`
-4. The main window and Pet appear; click Play or the Pet to start the countdown
+4. The main window appears with the Pet hidden; click Play to start the countdown
 
 The executable includes the Cat and Dog images and animation manifest. You can
 distribute the EXE alone; no external `assets` folder is required at runtime.
@@ -48,6 +48,16 @@ Only one instance runs per Windows sign-in session. Opening the app again restor
 the existing main window without restarting the countdown or changing the Pet.
 If the first instance is still starting, the second waits up to 5 seconds for its
 window; if unavailable, it reports an error instead of starting another instance.
+
+For background startup, run `stand-awhile.exe --autostart` with
+`launch_at_startup` set to `true`. The main window stays hidden from creation,
+the tray icon appears, and a full countdown starts immediately. This initial
+hidden state applies regardless of the auto-hide preference. The Pet appears
+when the countdown ends; the tray can restore the main window at any time.
+Without the argument, or with the preference disabled, startup is manual.
+An `--autostart` invocation while an instance is running exits silently,
+regardless of the preference, without changing its windows or countdown.
+Windows login startup registration is not implemented yet.
 
 The Pet is the application's reminder channel. It can be dragged, clicked to
 acknowledge a reminder, or controlled through its context menu. The application
@@ -97,7 +107,7 @@ the file, then restart. Omitted or null fields use the defaults below.
 | `language` | `"auto"` | `"auto"`, `"zh"`, or `"en"`; Auto follows the Windows UI language, using Chinese for Chinese locales and English otherwise |
 | `theme` | `"system"` | `"system"`, `"light"`, or `"dark"` |
 | `tray_when_close` | `true` | `true` hides the main window on close; `false` exits |
-| `launch_at_startup` | `false` | Stored startup preference; no startup registration is performed yet |
+| `launch_at_startup` | `false` | Enables background countdown when launched with `--autostart`; no Windows startup registration yet |
 
 Runtime information is stored separately in the UTF-8 file
 `%LOCALAPPDATA%\yinhaibo\stand-awhile\state.json`.

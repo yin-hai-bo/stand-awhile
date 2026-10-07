@@ -110,6 +110,11 @@ pub struct PetWindow {
 }
 
 impl PetWindow {
+    #[cfg(test)]
+    pub(crate) fn test_hwnd(&self) -> HWND {
+        self.hwnd
+    }
+
     pub fn create(
         instance: HINSTANCE,
         owner: HWND,

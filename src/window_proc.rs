@@ -934,6 +934,150 @@ mod tests {
     static TIMER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
+    fn background_start_counts_down_and_reminds_with_either_auto_hide_preference() {
+        use crate::{startup::StartupMode, ui::gdi_plus::GdiPlus};
+        use windows::Win32::{
+            System::LibraryLoader::GetModuleHandleW,
+            UI::WindowsAndMessaging::{
+                IDI_APPLICATION, LoadIconW, PM_REMOVE, PeekMessageW, RegisterClassW, WM_QUIT, WNDCLASSW,
+            },
+        };
+        let _guard = TIMER_TEST_LOCK.lock().unwrap();
+        let gdi_plus = GdiPlus::new().unwrap();
+        unsafe {
+            let instance: HINSTANCE = GetModuleHandleW(None).unwrap().into();
+            let class = WNDCLASSW {
+                lpfnWndProc: Some(window_proc),
+                hInstance: instance,
+                lpszClassName: windows::core::w!("StandAwhileBackgroundCountdownTest"),
+                ..Default::default()
+            };
+            assert_ne!(RegisterClassW(&class), 0);
+            for auto_hide_on_start in [false, true] {
+                let mode = StartupMode::new(true, true);
+                let hwnd = CreateWindowExW(
+                    Default::default(),
+                    class.lpszClassName,
+                    windows::core::w!(""),
+                    mode.window_style(),
+                    -10000,
+                    -10000,
+                    100,
+                    100,
+                    None,
+                    None,
+                    Some(instance),
+                    None,
+                )
+                .unwrap();
+                let catalog = crate::asset::load_character_catalog(&gdi_plus).unwrap();
+                let pet_window = PetWindow::create(
+                    instance,
+                    hwnd,
+                    catalog.get("cat").unwrap().clone(),
+                    Language::English,
+                    None,
+                    "Settings",
+                )
+                .unwrap();
+                let pet_hwnd = pet_window.test_hwnd();
+                let tray_icon = TrayIcon::create(
+                    hwnd,
+                    LoadIconW(None, IDI_APPLICATION).unwrap(),
+                    "Startup test",
+                    "Start",
+                    "Show",
+                    "Settings",
+                    "About",
+                    "Exit",
+                )
+                .unwrap();
+                // Native child controls let the real timer handler update button state.
+                let controls = std::array::from_fn(|_| {
+                    CreateWindowExW(
+                        Default::default(),
+                        windows::core::w!("BUTTON"),
+                        windows::core::w!(""),
+                        WS_CHILD,
+                        0,
+                        0,
+                        1,
+                        1,
+                        Some(hwnd),
+                        None,
+                        Some(instance),
+                        None,
+                    )
+                    .unwrap()
+                });
+                attach_window_state(
+                    hwnd,
+                    WindowState {
+                        auto_hide_on_start,
+                        auto_hide_checkbox: controls[0],
+                        language: Language::English,
+                        theme: Theme::System,
+                        tray_icon,
+                        tray_when_close: true,
+                        pet_window,
+                        character_catalog: catalog,
+                        components: Vec::new(),
+                        common_gui_font: None,
+                        settings_button: controls[0],
+                        settings_button_hovered: false,
+                        about_button: controls[1],
+                        about_button_hovered: false,
+                        settings_panel: HWND::default(),
+                        timer_panel: controls[2],
+                        control_buttons: controls,
+                    },
+                );
+                set_initial_remaining_seconds(2);
+                *TIMER_STATE.lock().unwrap() = TimerState::NotStarted;
+                mode.finish(hwnd);
+                assert_eq!(*TIMER_STATE.lock().unwrap(), TimerState::Running);
+                assert_eq!(remaining_seconds(), 2);
+                assert!(!IsWindowVisible(hwnd).as_bool());
+                assert!(!IsWindowVisible(pet_hwnd).as_bool());
+
+                SendMessageW(hwnd, WM_TIMER, Some(WPARAM(TIMER_ID)), None);
+                assert_eq!(remaining_seconds(), 1);
+                crate::startup::handle_existing_instance(true).unwrap();
+                assert!(!IsWindowVisible(hwnd).as_bool());
+                assert!(!IsWindowVisible(pet_hwnd).as_bool());
+                assert_eq!(*TIMER_STATE.lock().unwrap(), TimerState::Running);
+                assert_eq!(remaining_seconds(), 1);
+                SendMessageW(
+                    hwnd,
+                    WM_COMMAND,
+                    Some(WPARAM(crate::tray_icon::TRAY_MENU_SHOW_ID)),
+                    None,
+                );
+                assert!(IsWindowVisible(hwnd).as_bool());
+                assert_eq!(remaining_seconds(), 1);
+                assert_eq!(*TIMER_STATE.lock().unwrap(), TimerState::Running);
+                assert!(!IsWindowVisible(pet_hwnd).as_bool());
+
+                SendMessageW(hwnd, WM_TIMER, Some(WPARAM(TIMER_ID)), None);
+                assert_eq!(*TIMER_STATE.lock().unwrap(), TimerState::Finished);
+                assert_eq!(REMAINING_SECONDS.load(Ordering::Relaxed), 0);
+                assert!(IsWindowVisible(pet_hwnd).as_bool());
+                let _ = ShowWindow(hwnd, SW_HIDE);
+                crate::startup::handle_existing_instance(true).unwrap();
+                assert!(!IsWindowVisible(hwnd).as_bool());
+                assert!(IsWindowVisible(pet_hwnd).as_bool());
+                assert_eq!(*TIMER_STATE.lock().unwrap(), TimerState::Finished);
+                assert_eq!(REMAINING_SECONDS.load(Ordering::Relaxed), 0);
+                DestroyWindow(hwnd).unwrap();
+                let mut message = MSG::default();
+                let _ = PeekMessageW(&mut message, None, WM_QUIT, WM_QUIT, PM_REMOVE);
+            }
+        }
+        set_initial_remaining_seconds(DEFAULT_INITIAL_REMAINING_SECONDS);
+        *TIMER_STATE.lock().unwrap() = TimerState::NotStarted;
+    }
+
+    #[test]
     fn duplicate_instance_restores_main_window_without_changing_timer() {
         use windows::Win32::{
             System::LibraryLoader::GetModuleHandleW,

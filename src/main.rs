@@ -16,6 +16,7 @@ mod settings;
 mod single_instance;
 mod speech_bubble;
 mod speech_bubble_window;
+mod startup;
 mod timer_panel;
 mod tray_icon;
 mod ui;
@@ -38,8 +39,7 @@ use windows::Win32::{
         CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DispatchMessageW, GetMessageW, GetSystemMetrics, HICON, IDC_ARROW,
         IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTCOLOR, LoadCursorW, LoadIconW, LoadImageW, MB_ICONERROR, MB_OK, MSG,
         MessageBoxW, RegisterClassExW, SM_CXICON, SM_CXSCREEN, SM_CXSMICON, SM_CYICON, SM_CYSCREEN, SM_CYSMICON,
-        SW_SHOW, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WNDCLASSEXW, WS_CAPTION, WS_CLIPCHILDREN,
-        WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
+        TranslateMessage, WINDOW_EX_STYLE, WNDCLASSEXW,
     },
 };
 use windows::core::{Error, PCWSTR, Result};
@@ -80,17 +80,13 @@ fn main() {
 }
 
 fn run() -> Result<()> {
+    let autostart = startup::has_autostart_argument(std::env::args_os().skip(1));
     let Some(_instance) = single_instance::SingleInstance::acquire()? else {
-        if !single_instance::activate_existing()? {
-            return Err(Error::new(
-                windows::core::HRESULT(0x8000_4005u32 as i32),
-                i18n::existing_instance_unavailable_text(detect_language()),
-            ));
-        }
-        return Ok(());
+        return startup::handle_existing_instance(autostart);
     };
     unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)? };
     let config = Config::load()?;
+    let startup_mode = startup::StartupMode::new(autostart, config.launch_at_startup);
     let app_state = AppState::load()?;
     let language = config.language();
     let theme = config.theme();
@@ -120,7 +116,7 @@ fn run() -> Result<()> {
     register_button_class(instance)?;
     register_timer_panel_class(instance)?;
 
-    let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN | WS_VISIBLE;
+    let style = startup_mode.window_style();
     let ex_style = WINDOW_EX_STYLE::default();
     let dpi = unsafe { GetDpiForSystem() }.max(96);
     let window_width = scale_dimension(WINDOW_WIDTH, dpi);
@@ -208,9 +204,7 @@ fn run() -> Result<()> {
     update_control_buttons_for(&control_buttons, true, false, false);
     apply_theme(hwnd, theme)?;
 
-    unsafe {
-        let _ = ShowWindow(hwnd, SW_SHOW);
-    }
+    startup_mode.finish(hwnd);
 
     let mut message = MSG::default();
     loop {
