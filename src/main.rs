@@ -13,6 +13,7 @@ mod pet_window;
 #[allow(dead_code)]
 mod render;
 mod settings;
+mod single_instance;
 mod speech_bubble;
 mod speech_bubble_window;
 mod timer_panel;
@@ -41,7 +42,7 @@ use windows::Win32::{
         WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
     },
 };
-use windows::core::{Error, PCWSTR, Result, w};
+use windows::core::{Error, PCWSTR, Result};
 
 use i18n::{detect_language, main_window_title};
 use tray_icon::TrayIcon;
@@ -79,6 +80,15 @@ fn main() {
 }
 
 fn run() -> Result<()> {
+    let Some(_instance) = single_instance::SingleInstance::acquire()? else {
+        if !single_instance::activate_existing()? {
+            return Err(Error::new(
+                windows::core::HRESULT(0x8000_4005u32 as i32),
+                i18n::existing_instance_unavailable_text(detect_language()),
+            ));
+        }
+        return Ok(());
+    };
     unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)? };
     let config = Config::load()?;
     let app_state = AppState::load()?;
@@ -88,7 +98,7 @@ fn run() -> Result<()> {
 
     let app_title = wide_null(main_window_title(language));
     let instance: HINSTANCE = unsafe { GetModuleHandleW(None)? }.into();
-    let class_name = w!("YHB-StandAwhileWindowClass");
+    let class_name = single_instance::MAIN_WINDOW_CLASS;
     let (large_icon, small_icon) = load_app_icons(instance);
 
     let wnd_class = WNDCLASSEXW {

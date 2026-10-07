@@ -225,7 +225,7 @@ fn notify_icon(message: NOTIFY_ICON_MESSAGE, data: &NOTIFYICONDATAW) -> Result<(
     Ok(())
 }
 
-fn show_main_window(hwnd: HWND) {
+pub(crate) fn show_main_window(hwnd: HWND) {
     unsafe {
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = ShowWindow(hwnd, SW_RESTORE);

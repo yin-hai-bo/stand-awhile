@@ -8,6 +8,7 @@ window messages, animation updates, and rendering run on the main thread.
 | Module | Responsibility |
 | --- | --- |
 | `main.rs` | DPI awareness, configuration, GDI+ startup, window creation, message loop |
+| `single_instance.rs` | Session-local instance mutex, bounded existing-window lookup, activation message |
 | `window_proc.rs` | Countdown state, Pet commands, settings application, main window lifetime |
 | `settings.rs`, `config.rs` | Settings UI and UTF-8 JSON persistence in Roaming AppData |
 | `asset.rs`, `build.rs` | Embedded manifest and PNGs; in-memory GDI+ decoding and character catalog |

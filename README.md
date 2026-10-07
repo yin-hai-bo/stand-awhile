@@ -44,6 +44,11 @@ It reminds you to take a movement break without taking focus away from your work
 The executable includes the Cat and Dog images and animation manifest. You can
 distribute the EXE alone; no external `assets` folder is required at runtime.
 
+Only one instance runs per Windows sign-in session. Opening the app again restores
+the existing main window without restarting the countdown or changing the Pet.
+If the first instance is still starting, the second waits up to 5 seconds for its
+window; if unavailable, it reports an error instead of starting another instance.
+
 The Pet is the application's reminder channel. It can be dragged, clicked to
 acknowledge a reminder, or controlled through its context menu. The application
 does not use Windows toast notifications or tray balloon reminders.

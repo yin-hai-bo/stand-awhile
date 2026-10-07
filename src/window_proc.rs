@@ -200,6 +200,10 @@ pub fn process_dialog_message(hwnd: HWND, message: &MSG) -> bool {
 
 pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
+        crate::single_instance::WM_SHOW_EXISTING_INSTANCE => {
+            crate::tray_icon::show_main_window(hwnd);
+            LRESULT(0)
+        }
         WM_PAINT => {
             let mut paint = PAINTSTRUCT::default();
             let hdc = unsafe { BeginPaint(hwnd, &mut paint) };
@@ -928,6 +932,66 @@ fn settings_back_text(language: Language) -> &'static str {
 mod tests {
     use super::*;
     static TIMER_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn duplicate_instance_restores_main_window_without_changing_timer() {
+        use windows::Win32::{
+            System::LibraryLoader::GetModuleHandleW,
+            UI::WindowsAndMessaging::{
+                CreateWindowExW, IsIconic, PM_REMOVE, PeekMessageW, RegisterClassW, SW_SHOWMINNOACTIVE, WM_QUIT,
+                WNDCLASSW, WS_OVERLAPPEDWINDOW,
+            },
+        };
+        let _guard = TIMER_TEST_LOCK.lock().unwrap();
+        unsafe {
+            let instance: HINSTANCE = GetModuleHandleW(None).unwrap().into();
+            let class = WNDCLASSW {
+                lpfnWndProc: Some(window_proc),
+                hInstance: instance,
+                lpszClassName: windows::core::w!("StandAwhileDuplicateInstanceRestoreTest"),
+                ..Default::default()
+            };
+            assert_ne!(RegisterClassW(&class), 0);
+            let hwnd = CreateWindowExW(
+                Default::default(),
+                class.lpszClassName,
+                windows::core::w!(""),
+                WS_OVERLAPPEDWINDOW,
+                0,
+                0,
+                100,
+                100,
+                None,
+                None,
+                Some(instance),
+                None,
+            )
+            .unwrap();
+            set_initial_remaining_seconds(1200);
+            for (state, remaining) in [
+                (TimerState::Running, 731),
+                (TimerState::Paused, 412),
+                (TimerState::Finished, 0),
+            ] {
+                *TIMER_STATE.lock().unwrap() = state;
+                REMAINING_SECONDS.store(remaining, Ordering::Relaxed);
+                for presentation in [SW_HIDE, SW_SHOWMINNOACTIVE] {
+                    let _ = ShowWindow(hwnd, presentation);
+                    assert!(!IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool());
+                    SendMessageW(hwnd, crate::single_instance::WM_SHOW_EXISTING_INSTANCE, None, None);
+                    assert!(IsWindowVisible(hwnd).as_bool());
+                    assert!(!IsIconic(hwnd).as_bool());
+                    assert_eq!(*TIMER_STATE.lock().unwrap(), state);
+                    assert_eq!(REMAINING_SECONDS.load(Ordering::Relaxed), remaining);
+                }
+            }
+            DestroyWindow(hwnd).unwrap();
+            let mut message = MSG::default();
+            let _ = PeekMessageW(&mut message, None, WM_QUIT, WM_QUIT, PM_REMOVE);
+            set_initial_remaining_seconds(DEFAULT_INITIAL_REMAINING_SECONDS);
+            *TIMER_STATE.lock().unwrap() = TimerState::NotStarted;
+        }
+    }
 
     #[test]
     fn finished_countdown_displays_configured_duration() {

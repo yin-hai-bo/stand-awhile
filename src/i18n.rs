@@ -31,6 +31,13 @@ pub fn main_window_title(language: Language) -> &'static str {
     }
 }
 
+pub fn existing_instance_unavailable_text(language: Language) -> &'static str {
+    match language {
+        Language::Chinese => "程序已在运行，但未能找到主窗口。请稍后重试。",
+        Language::English => "The app is already running, but its main window could not be found. Please try again.",
+    }
+}
+
 pub fn pet_reminder_text(language: Language) -> &'static str {
     match language {
         Language::Chinese => "该站起来活动一下啦！\n单击桌宠，开始新一轮倒计时",
