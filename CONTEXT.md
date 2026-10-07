@@ -24,6 +24,10 @@ The main countdown uses a one-second Win32 timer to decrement its remaining
 seconds. Pet animation uses a 16 ms window timer to schedule updates and
 `Instant` to select frames. There is no asset worker or GPU renderer.
 
+The countdown intentionally accepts occasional delays of a few seconds to
+ten or more seconds; exact wall-clock timing is not required. See
+[ADR 0003](docs/adr/0003-countdown-timing-tolerance.md).
+
 ## Domain glossary
 
 ### Pet
