@@ -191,7 +191,9 @@ mod tests {
 
     #[test]
     fn formats_minutes_and_seconds() {
+        assert_eq!(format_remaining_time(30), "00:30");
         assert_eq!(format_remaining_time(65), "01:05");
+        assert_eq!(format_remaining_time(90), "01:30");
     }
 
     #[test]

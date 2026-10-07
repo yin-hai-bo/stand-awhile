@@ -10,7 +10,7 @@ use crate::ui::theme::{Theme, resolve_theme};
 
 const DEFAULT_CONFIG_CONTENTS: &str = "{}\n";
 const DEFAULT_PERIOD_SECONDS: u32 = 20 * 60;
-const DEFAULT_TRAY_WHEN_CLOSE: bool = false;
+const DEFAULT_TRAY_WHEN_CLOSE: bool = true;
 const DEFAULT_LANGUAGE: &str = "auto";
 const DEFAULT_THEME: &str = "system";
 const DEFAULT_CHARACTER: &str = "cat";
@@ -119,7 +119,7 @@ mod tests {
     fn config_default_values_are_stable() {
         let config = Config::default();
         assert_eq!(config.period, 20 * 60);
-        assert!(!config.tray_when_close);
+        assert!(config.tray_when_close);
         assert!(config.auto_hide_on_start);
         assert_eq!(config.language, "auto");
         assert_eq!(config.theme, "system");

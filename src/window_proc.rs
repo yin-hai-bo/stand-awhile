@@ -12,8 +12,8 @@ use crate::pet_window::{
 use crate::settings::{
     ABOUT_BUTTON_ID, SETTINGS_APPLIED_ID, SETTINGS_BUTTON_ID, SETTINGS_CHANGED_ID, SETTINGS_CLOSED_ID,
     create_settings_panel, draw_settings_button, refresh_settings_panel_theme, resize_settings_panel,
-    save_settings_panel, set_settings_button_text, update_settings_button_font, update_settings_panel_font,
-    update_settings_panel_language,
+    save_settings_panel, set_settings_button_text, update_settings_button_font, update_settings_panel_auto_hide,
+    update_settings_panel_font, update_settings_panel_language,
 };
 use crate::timer_panel::resize_timer_panel;
 use crate::ui::font::common_gui_font;
@@ -156,6 +156,7 @@ fn save_auto_hide_preference(hwnd: HWND) {
         }
     } else {
         state.auto_hide_on_start = checked;
+        update_settings_panel_auto_hide(state.settings_panel, checked);
     }
 }
 
@@ -850,6 +851,7 @@ fn apply_saved_settings(hwnd: HWND) {
     if let Some(state) = window_state_mut(hwnd) {
         state.language = language;
         state.auto_hide_on_start = config.auto_hide_on_start;
+        update_settings_panel_auto_hide(state.settings_panel, config.auto_hide_on_start);
         set_auto_hide_checked(state.auto_hide_checkbox, config.auto_hide_on_start);
         set_settings_button_text(state.auto_hide_checkbox, crate::i18n::auto_hide_text(language));
         unsafe {

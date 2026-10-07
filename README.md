@@ -71,12 +71,15 @@ window; the countdown and any visible Pet reminder continue.
 ### Settings and Configuration
 
 Open **Settings** from the main window, tray menu, or Pet menu. Character,
-language, theme, and close behavior changes are saved and applied immediately.
-The interval is measured in seconds (at least 1 in Settings) and is saved when
-you click **Back**. Changing the interval replaces the remaining countdown;
+language, theme, close behavior, and auto-hide changes are saved and applied immediately.
+The auto-hide Yes/No options share the main window checkbox's preference.
+Settings accepts whole minutes (at least 1), converted to seconds when you click
+**Back**. Existing intervals are displayed rounded up to minutes; leaving the
+input unchanged preserves the original seconds. The countdown always displays
+the exact seconds. Changing the interval replaces the remaining countdown;
 changing other settings preserves it.
 
-The UTF-8 configuration file is `%APPDATA%\yhb\stand-awhile\config.json`.
+The UTF-8 configuration file is `%APPDATA%\yinhaibo\stand-awhile\config.json`.
 It is created on first launch. For manual changes, close the application, edit
 the file, then restart. Omitted or null fields use the defaults below.
 
@@ -86,10 +89,10 @@ the file, then restart. Omitted or null fields use the defaults below.
 | `character` | `"cat"` | `"cat"` or `"dog"`; unknown characters fall back to Cat |
 | `language` | `"auto"` | `"auto"`, `"zh"`, or `"en"`; Auto follows the Windows UI language, using Chinese for Chinese locales and English otherwise |
 | `theme` | `"system"` | `"system"`, `"light"`, or `"dark"` |
-| `tray_when_close` | `false` | `true` hides the main window on close; `false` exits |
+| `tray_when_close` | `true` | `true` hides the main window on close; `false` exits |
 
 Runtime information is stored separately in the UTF-8 file
-`%LOCALAPPDATA%\yhb\stand-awhile\state.json`.
+`%LOCALAPPDATA%\yinhaibo\stand-awhile\state.json`.
 It records `pet_position` automatically after dragging. Older
 positions in `config.json` are ignored; the first launch without `state.json`
 uses the default position.

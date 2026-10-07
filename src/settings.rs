@@ -14,7 +14,7 @@ use windows::{
             Input::KeyboardAndMouse::SetFocus,
             WindowsAndMessaging::{
                 BM_GETCHECK, BM_SETCHECK, BN_CLICKED, BS_AUTORADIOBUTTON, BS_OWNERDRAW, CREATESTRUCTW, CreateWindowExW,
-                DefWindowProcW, DestroyWindow, EN_KILLFOCUS, ES_NUMBER, GWLP_USERDATA, GetWindowLongPtrW,
+                DefWindowProcW, DestroyWindow, EN_CHANGE, EN_KILLFOCUS, ES_NUMBER, GWLP_USERDATA, GetWindowLongPtrW,
                 GetWindowTextLengthW, GetWindowTextW, HMENU, IDC_ARROW, LoadCursorW, RegisterClassExW, SendMessageW,
                 SetWindowLongPtrW, SetWindowTextW, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLOREDIT,
                 WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_ERASEBKGND, WM_NCACTIVATE, WM_NCDESTROY, WM_SETFOCUS,
@@ -46,6 +46,9 @@ const THEME_LIGHT_ID: usize = 17;
 const THEME_DARK_ID: usize = 18;
 const CLOSE_EXIT_ID: usize = 19;
 const CLOSE_TRAY_ID: usize = 20;
+const AUTO_HIDE_YES_ID: usize = 21;
+const AUTO_HIDE_NO_ID: usize = 22;
+const SETTINGS_TITLE_COUNT: usize = 6;
 
 const BASE_GRID_LEFT: i32 = 72;
 const BASE_TITLE_WIDTH: i32 = 196;
@@ -61,10 +64,12 @@ struct SettingsState {
     instance: HINSTANCE,
     config: Config,
     period: HWND,
+    period_changed: bool,
     character: [HWND; 2],
     language: [HWND; 3],
     theme: [HWND; 3],
     close_behavior: [HWND; 2],
+    auto_hide: [HWND; 2],
     font: Option<HFONT>,
     title_font: Option<HFONT>,
     font_controls: Vec<HWND>,
@@ -101,10 +106,12 @@ pub fn create_settings_panel(parent: HWND, instance: HINSTANCE, config: Config, 
         instance,
         config,
         period: HWND::default(),
+        period_changed: false,
         character: [HWND::default(); 2],
         language: [HWND::default(); 3],
         theme: [HWND::default(); 3],
         close_behavior: [HWND::default(); 2],
+        auto_hide: [HWND::default(); 2],
         font,
         title_font: None,
         font_controls: Vec::new(),
@@ -169,6 +176,7 @@ pub fn layout_settings_panel(hwnd: HWND, dpi: u32) {
         state.font_controls[2],
         state.font_controls[3],
         state.font_controls[4],
+        state.font_controls[5],
     ];
     for (index, label) in labels.into_iter().enumerate() {
         let y = grid_top + index as i32 * row_step;
@@ -205,6 +213,14 @@ pub fn layout_settings_panel(hwnd: HWND, dpi: u32) {
         &state.close_behavior,
         control_x,
         grid_top + 4 * row_step,
+        control_width,
+        row_height,
+        dpi,
+    );
+    layout_radio_group(
+        &state.auto_hide,
+        control_x,
+        grid_top + 5 * row_step,
         control_width,
         row_height,
         dpi,
@@ -316,7 +332,7 @@ unsafe extern "system" fn settings_window_proc(hwnd: HWND, msg: u32, wparam: WPA
             if let Some(state) = state_mut(hwnd) {
                 let hdc = HDC(wparam.0 as _);
                 let title = HWND(lparam.0 as _);
-                let text = if state.font_controls[..5].contains(&title) {
+                let text = if state.font_controls[..SETTINGS_TITLE_COUNT].contains(&title) {
                     if state.dark_mode {
                         COLORREF(0x0066D1FF)
                     } else {
@@ -343,15 +359,25 @@ unsafe extern "system" fn settings_window_proc(hwnd: HWND, msg: u32, wparam: WPA
         WM_COMMAND => {
             let id = (wparam.0 & 0xFFFF) as usize;
             let notification = ((wparam.0 >> 16) & 0xFFFF) as u32;
+            if id == PERIOD_ID && notification == EN_CHANGE {
+                if let Some(state) = state_mut(hwnd)
+                    && !state.period.is_invalid()
+                {
+                    state.period_changed = true;
+                }
+            }
             if id == PERIOD_ID && notification == EN_KILLFOCUS {
-                if let Some(state) = state_mut(hwnd) {
+                if let Some(state) = state_mut(hwnd)
+                    && state.period_changed
+                {
                     normalize_period(state.period);
                 }
             }
             if notification == BN_CLICKED {
                 match id {
                     CHARACTER_CAT_ID | CHARACTER_DOG_ID | LANGUAGE_AUTO_ID | LANGUAGE_ZH_ID | LANGUAGE_EN_ID
-                    | THEME_SYSTEM_ID | THEME_LIGHT_ID | THEME_DARK_ID | CLOSE_EXIT_ID | CLOSE_TRAY_ID => {
+                    | THEME_SYSTEM_ID | THEME_LIGHT_ID | THEME_DARK_ID | CLOSE_EXIT_ID | CLOSE_TRAY_ID
+                    | AUTO_HIDE_YES_ID | AUTO_HIDE_NO_ID => {
                         if let Some(state) = state_mut(hwnd) {
                             if let Ok(config) = Config::load().map(|config| read_config_without_period(state, config)) {
                                 if config.save().is_ok() {
@@ -429,7 +455,7 @@ fn create_controls(hwnd: HWND, state: &mut SettingsState) {
         hwnd,
         state.instance,
         PERIOD_ID,
-        &state.config.period.to_string(),
+        &period_minutes(state.config.period).to_string(),
         280,
         80,
     );
@@ -503,13 +529,29 @@ fn create_controls(hwnd: HWND, state: &mut SettingsState) {
             false,
         ),
     ];
+    state.auto_hide = [
+        create_radio(
+            hwnd,
+            state.instance,
+            AUTO_HIDE_YES_ID,
+            if chinese { "是" } else { "Yes" },
+            true,
+        ),
+        create_radio(
+            hwnd,
+            state.instance,
+            AUTO_HIDE_NO_ID,
+            if chinese { "否" } else { "No" },
+            false,
+        ),
+    ];
     let label = create_static(
         hwnd,
         state.instance,
         if chinese {
-            "倒计时秒数："
+            "倒计数分钟数："
         } else {
-            "Countdown seconds:"
+            "Countdown minutes:"
         },
         72,
         84,
@@ -539,11 +581,24 @@ fn create_controls(hwnd: HWND, state: &mut SettingsState) {
         276,
     );
     font_controls.push(label);
+    let label = create_static(
+        hwnd,
+        state.instance,
+        if chinese {
+            "开始后自动隐藏主窗口："
+        } else {
+            "Auto-hide on start:"
+        },
+        72,
+        324,
+    );
+    font_controls.push(label);
     font_controls.push(state.period);
     font_controls.extend(state.character);
     font_controls.extend(state.language);
     font_controls.extend(state.theme);
     font_controls.extend(state.close_behavior);
+    font_controls.extend(state.auto_hide);
     state.font_controls = font_controls;
     set_radio_group(&state.character, &state.config.character, &["cat", "dog"]);
     set_radio_group(&state.language, &state.config.language, &["auto", "zh", "en"]);
@@ -553,11 +608,16 @@ fn create_controls(hwnd: HWND, state: &mut SettingsState) {
         if state.config.tray_when_close { "tray" } else { "exit" },
         &["exit", "tray"],
     );
+    set_radio_group(
+        &state.auto_hide,
+        if state.config.auto_hide_on_start { "yes" } else { "no" },
+        &["yes", "no"],
+    );
     replace_title_font(state);
     for control in &state.font_controls {
         set_font(*control, state.font);
     }
-    for title in &state.font_controls[..5] {
+    for title in &state.font_controls[..SETTINGS_TITLE_COUNT] {
         set_font(*title, state.title_font);
     }
 }
@@ -571,7 +631,7 @@ pub fn update_settings_panel_font(hwnd: HWND, dpi: u32) {
     for control in &state.font_controls {
         set_font(*control, state.font);
     }
-    for title in &state.font_controls[..5] {
+    for title in &state.font_controls[..SETTINGS_TITLE_COUNT] {
         set_font(*title, state.title_font);
     }
     layout_settings_panel(hwnd, dpi);
@@ -584,9 +644,9 @@ pub fn update_settings_panel_language(hwnd: HWND, language: crate::i18n::Languag
     let chinese = language == crate::i18n::Language::Chinese;
     let titles = [
         if chinese {
-            "倒计时秒数："
+            "倒计数分钟数："
         } else {
-            "Countdown seconds:"
+            "Countdown minutes:"
         },
         if chinese { "桌宠：" } else { "Pet:" },
         if chinese { "语言：" } else { "Language:" },
@@ -596,8 +656,13 @@ pub fn update_settings_panel_language(hwnd: HWND, language: crate::i18n::Languag
         } else {
             "Close behavior:"
         },
+        if chinese {
+            "开始后自动隐藏主窗口："
+        } else {
+            "Auto-hide on start:"
+        },
     ];
-    for (control, text) in state.font_controls[..5].iter().zip(titles) {
+    for (control, text) in state.font_controls[..SETTINGS_TITLE_COUNT].iter().zip(titles) {
         set_control_text(*control, text);
     }
     let language_options = if chinese {
@@ -628,7 +693,17 @@ pub fn update_settings_panel_language(hwnd: HWND, language: crate::i18n::Languag
     for (control, text) in state.close_behavior.iter().zip(close_options) {
         set_control_text(*control, text);
     }
+    let auto_hide_options = if chinese { ["是", "否"] } else { ["Yes", "No"] };
+    for (control, text) in state.auto_hide.iter().zip(auto_hide_options) {
+        set_control_text(*control, text);
+    }
     set_window_text(hwnd, if chinese { "设置" } else { "Settings" });
+}
+
+pub fn update_settings_panel_auto_hide(hwnd: HWND, enabled: bool) {
+    if let Some(state) = state_mut(hwnd) {
+        set_radio_group(&state.auto_hide, if enabled { "yes" } else { "no" }, &["yes", "no"]);
+    }
 }
 
 pub fn refresh_settings_panel_theme(hwnd: HWND, config: &Config) {
@@ -780,17 +855,29 @@ fn is_settings_dark_mode(config: &Config) -> bool {
 }
 
 fn read_config(state: &SettingsState, config: Config) -> Config {
-    let period = get_window_text(state.period).parse::<u32>().unwrap_or(1).max(1);
     let mut config = read_config_without_period(state, config);
-    config.period = period.max(1);
+    if state.period_changed {
+        config.period = parse_period_minutes(&get_window_text(state.period)) * 60;
+    }
     config
 }
 
+fn period_minutes(seconds: u32) -> u32 {
+    seconds.div_ceil(60).max(1)
+}
+
+fn parse_period_minutes(text: &str) -> u32 {
+    text.parse::<u32>().unwrap_or(1).clamp(1, u32::MAX / 60)
+}
+
 fn normalize_period(hwnd: HWND) {
-    let period = get_window_text(hwnd).parse::<u32>().unwrap_or(1).max(1);
+    let text = get_window_text(hwnd);
+    let period = parse_period_minutes(&text);
     let value = period.to_string();
-    unsafe {
-        let _ = SetWindowTextW(hwnd, PCWSTR(wide(&value).as_ptr()));
+    if text != value {
+        unsafe {
+            let _ = SetWindowTextW(hwnd, PCWSTR(wide(&value).as_ptr()));
+        }
     }
 }
 
@@ -806,6 +893,7 @@ fn read_config_without_period(state: &SettingsState, mut config: Config) -> Conf
     config.language = radio_text(&state.language, &["auto", "zh", "en"]);
     config.theme = radio_text(&state.theme, &["system", "light", "dark"]);
     config.tray_when_close = is_checked(state.close_behavior[1]);
+    config.auto_hide_on_start = is_checked(state.auto_hide[0]);
     config
 }
 
@@ -991,25 +1079,85 @@ mod tests {
             )?
         };
         let drops = STATE_DROPS.with(|count| count.get());
-        for _ in 0..3 {
-            let panel = create_settings_panel(parent, instance, Config::default(), None)?;
-            let state = state_mut(panel).unwrap();
-            let latest = Config {
-                auto_hide_on_start: false,
+        for period in [30, 90, 1200] {
+            let initial = Config {
+                period,
+                auto_hide_on_start: period != 90,
                 ..Config::default()
             };
+            let panel = create_settings_panel(parent, instance, initial.clone(), None)?;
+            for dpi in [96, 144, 192] {
+                move_control(panel, 0, 0, 800 * dpi as i32 / 96, 469 * dpi as i32 / 96);
+                layout_settings_panel(panel, dpi);
+                let state = state_mut(panel).unwrap();
+                let mut panel_rect = RECT::default();
+                let mut previous_row = RECT::default();
+                let mut auto_hide_rect = RECT::default();
+                unsafe {
+                    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+                    GetWindowRect(panel, &mut panel_rect)?;
+                    GetWindowRect(state.close_behavior[0], &mut previous_row)?;
+                    GetWindowRect(state.auto_hide[0], &mut auto_hide_rect)?;
+                }
+                assert!(auto_hide_rect.top >= previous_row.bottom);
+                assert!(auto_hide_rect.bottom <= panel_rect.bottom);
+            }
+            update_settings_panel_language(panel, crate::i18n::Language::English);
+            assert_eq!(get_window_text(state_mut(panel).unwrap().auto_hide[0]), "Yes");
+            update_settings_panel_language(panel, crate::i18n::Language::Chinese);
+            assert_eq!(get_window_text(state_mut(panel).unwrap().auto_hide[1]), "否");
+            let state = state_mut(panel).unwrap();
+            assert_eq!(is_checked(state.auto_hide[0]), initial.auto_hide_on_start);
+            assert_eq!(is_checked(state.auto_hide[1]), !initial.auto_hide_on_start);
+            assert_eq!(
+                read_config_without_period(state, initial.clone()).auto_hide_on_start,
+                initial.auto_hide_on_start
+            );
+            update_settings_panel_auto_hide(panel, false);
+            assert!(!is_checked(state.auto_hide[0]));
+            assert!(is_checked(state.auto_hide[1]));
+            let latest = Config {
+                auto_hide_on_start: false,
+                ..initial
+            };
+            assert_eq!(get_window_text(state.period), period_minutes(period).to_string());
+            normalize_period(state.period);
+            assert!(!state.period_changed);
+            assert_eq!(read_config(state, latest.clone()).period, period);
             set_window_text(state.period, "90");
+            assert!(state.period_changed);
             let changed = read_config_without_period(state, latest.clone());
             assert_eq!(changed.period, latest.period);
             assert!(!changed.auto_hide_on_start);
             let saved = read_config(state, latest.clone());
-            assert_eq!(saved.period, 90);
+            assert_eq!(saved.period, 90 * 60);
             assert!(!saved.auto_hide_on_start);
             unsafe { DestroyWindow(panel)? };
         }
         unsafe { DestroyWindow(parent)? };
         assert_eq!(STATE_DROPS.with(|count| count.get()), drops + 3);
         Ok(())
+    }
+
+    #[test]
+    fn minute_conversion_rounds_up_and_bounds_saved_seconds() {
+        for (seconds, minutes) in [
+            (0, 1),
+            (1, 1),
+            (59, 1),
+            (60, 1),
+            (61, 2),
+            (90, 2),
+            (1200, 20),
+            (u32::MAX, 71582789),
+        ] {
+            assert_eq!(period_minutes(seconds), minutes);
+        }
+        for (input, minutes) in [("", 1), ("0", 1), ("1", 1), ("20", 20), ("4294967295", u32::MAX / 60)] {
+            let parsed = parse_period_minutes(input);
+            assert_eq!(parsed, minutes);
+            assert_eq!((parsed * 60) % 60, 0);
+        }
     }
 
     #[test]

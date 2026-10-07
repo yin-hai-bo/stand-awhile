@@ -15,7 +15,7 @@ pub(crate) fn state_file_path() -> Result<PathBuf> {
 }
 
 fn data_file_path(folder: &GUID, name: &str) -> Result<PathBuf> {
-    let directory = appdata_dir(folder)?.join("yhb").join("stand-awhile");
+    let directory = appdata_dir(folder)?.join("yinhaibo").join("stand-awhile");
     fs::create_dir_all(&directory).map_err(io_error_to_win_error)?;
     Ok(directory.join(name))
 }
