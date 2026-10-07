@@ -1,8 +1,8 @@
 use crate::ui::theme::{is_dark_theme_active, paint_background};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, EndPaint, HDC, HGDIOBJ,
-    InvalidateRect, PAINTSTRUCT, SRCCOPY, SelectObject,
+    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, DrawFocusRect, EndPaint,
+    HDC, HGDIOBJ, InvalidateRect, PAINTSTRUCT, SRCCOPY, SelectObject,
 };
 use windows::Win32::Graphics::GdiPlus::{
     DashCapRound, FillModeAlternate, GdipCreateFromHDC, GdipCreatePen1, GdipCreateSolidFill, GdipDeleteBrush,
@@ -14,15 +14,17 @@ use windows::Win32::Graphics::GdiPlus::{
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    EnableWindow, IsWindowEnabled, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
+    EnableWindow, GetFocus, IsWindowEnabled, ReleaseCapture, SetCapture, SetFocus, TME_LEAVE, TRACKMOUSEEVENT,
+    TrackMouseEvent, VK_RETURN, VK_SPACE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     BN_CLICKED, CREATESTRUCTW, CreateWindowExW, DefWindowProcW, GWLP_USERDATA, GetClientRect, GetParent,
     GetWindowLongPtrW, HCURSOR, HMENU, IDC_ARROW, IDC_HAND, LoadCursorW, MoveWindow, PostMessageW, RegisterClassW,
-    SetCursor, SetWindowLongPtrW, WINDOW_EX_STYLE, WM_CAPTURECHANGED, WM_COMMAND, WM_ENABLE, WM_ERASEBKGND,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SETCURSOR, WNDCLASSW, WS_CHILD,
-    WS_VISIBLE,
+    SetCursor, SetWindowLongPtrW, WINDOW_EX_STYLE, WM_CAPTURECHANGED, WM_CHAR, WM_COMMAND, WM_ENABLE, WM_ERASEBKGND,
+    WM_GETDLGCODE, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE,
+    WM_NCDESTROY, WM_PAINT, WM_SETCURSOR, WM_SETFOCUS, WNDCLASSW, WS_CHILD, WS_TABSTOP, WS_VISIBLE,
 };
+use windows::Win32::UI::WindowsAndMessaging::{DLGC_BUTTON, DLGC_UNDEFPUSHBUTTON, DLGC_WANTMESSAGE};
 use windows::core::{Error, Result, w};
 
 const BUTTON_COUNT: usize = 3;
@@ -117,7 +119,7 @@ pub fn create_control_buttons(parent: HWND, instance: HINSTANCE) -> Result<[HWND
                 WINDOW_EX_STYLE::default(),
                 BUTTON_CLASS_NAME,
                 w!(""),
-                WS_CHILD | WS_VISIBLE,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                 0,
                 0,
                 1,
@@ -230,6 +232,46 @@ unsafe extern "system" fn button_window_proc(hwnd: HWND, msg: u32, wparam: WPARA
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
+        WM_GETDLGCODE => {
+            let mut code = DLGC_BUTTON | DLGC_UNDEFPUSHBUTTON;
+            if wparam.0 == VK_SPACE.0 as usize || wparam.0 == VK_RETURN.0 as usize {
+                code |= DLGC_WANTMESSAGE;
+            }
+            LRESULT(code as isize)
+        }
+        WM_SETFOCUS | WM_KILLFOCUS => {
+            if msg == WM_KILLFOCUS {
+                if let Some(state) = button_state_mut(hwnd) {
+                    state.pressed = false;
+                }
+            }
+            unsafe {
+                let _ = InvalidateRect(Some(hwnd), None, false);
+            }
+            LRESULT(0)
+        }
+        WM_KEYDOWN | WM_KEYUP if wparam.0 == VK_SPACE.0 as usize || wparam.0 == VK_RETURN.0 as usize => {
+            if !is_button_enabled(hwnd) {
+                return LRESULT(0);
+            }
+            let mut should_click = false;
+            if let Some(state) = button_state_mut(hwnd) {
+                if msg == WM_KEYUP {
+                    should_click = state.pressed;
+                    state.pressed = false;
+                } else {
+                    state.pressed = true;
+                }
+            }
+            unsafe {
+                let _ = InvalidateRect(Some(hwnd), None, false);
+            }
+            if should_click {
+                notify_parent_clicked(hwnd);
+            }
+            LRESULT(0)
+        }
+        WM_CHAR => LRESULT(0),
         WM_ENABLE => {
             if let Some(state) = button_state_mut(hwnd) {
                 state.hovered = false;
@@ -293,6 +335,7 @@ unsafe extern "system" fn button_window_proc(hwnd: HWND, msg: u32, wparam: WPARA
                     state.hovered = true;
                     unsafe {
                         let _ = SetCapture(hwnd);
+                        let _ = SetFocus(Some(hwnd));
                         let _ = InvalidateRect(Some(hwnd), None, false);
                     }
                 }
@@ -386,7 +429,15 @@ fn draw_button_window(hwnd: HWND, hdc: HDC, state: &ButtonWindowState) -> Result
         state.hovered,
         state.pressed,
         dpi,
-    )
+    )?;
+    drop(graphics);
+    if unsafe { GetFocus() } == hwnd {
+        let focus_rect = inset_rect(client_rect, scale_dimension(2, dpi));
+        unsafe {
+            let _ = DrawFocusRect(hdc, &focus_rect);
+        }
+    }
+    Ok(())
 }
 
 fn paint_button_buffered(hwnd: HWND, target_hdc: HDC, state: &ButtonWindowState) -> Result<()> {

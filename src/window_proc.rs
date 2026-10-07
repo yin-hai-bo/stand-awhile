@@ -42,9 +42,9 @@ use windows::Win32::{
     UI::HiDpi::GetDpiForWindow,
     UI::WindowsAndMessaging::{
         BM_GETCHECK, BM_SETCHECK, BN_CLICKED, BS_AUTOCHECKBOX, CreateWindowExW, DefWindowProcW, DestroyWindow,
-        GWLP_USERDATA, GetClientRect, GetWindowLongPtrW, HMENU, HWND_TOP, IDC_HAND, IsDialogMessageW, IsWindow,
-        IsWindowVisible, KillTimer, LoadCursorW, MSG, MoveWindow, PostQuitMessage, SW_HIDE, SW_SHOW, SWP_NOACTIVATE,
-        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetCursor, SetForegroundWindow, SetTimer,
+        GWLP_USERDATA, GetClientRect, GetWindowLongPtrW, HMENU, HWND_BOTTOM, HWND_TOP, IDC_HAND, IsDialogMessageW,
+        IsWindow, IsWindowVisible, KillTimer, LoadCursorW, MSG, MoveWindow, PostQuitMessage, SW_HIDE, SW_SHOW,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetCursor, SetForegroundWindow, SetTimer,
         SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, WINDOW_STYLE, WM_CLOSE, WM_COMMAND,
         WM_CTLCOLORBTN, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_NCDESTROY, WM_PAINT,
         WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE, WM_THEMECHANGED, WM_TIMER, WS_CHILD, WS_TABSTOP, WS_VISIBLE,
@@ -194,15 +194,8 @@ pub fn attach_window_state(hwnd: HWND, state: WindowState) {
     }
 }
 
-pub fn process_settings_message(hwnd: HWND, message: &MSG) -> bool {
-    let Some(state) = window_state(hwnd) else {
-        return false;
-    };
-    if unsafe { IsWindowVisible(state.settings_panel).as_bool() } {
-        unsafe { IsDialogMessageW(hwnd, message).as_bool() }
-    } else {
-        false
-    }
+pub fn process_dialog_message(hwnd: HWND, message: &MSG) -> bool {
+    unsafe { IsDialogMessageW(hwnd, message).as_bool() }
 }
 
 pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -652,7 +645,7 @@ fn layout_settings_button(hwnd: HWND) {
     let scale = |value: i32| value * dpi as i32 / 96;
     let width = scale(96);
     let height = scale(32);
-    let right_margin = scale(24);
+    let right_margin = scale(12);
     let bottom_margin = scale(32);
     let settings_left = rect.right - right_margin - width;
     unsafe {
@@ -674,21 +667,34 @@ fn layout_settings_button(hwnd: HWND) {
         );
         let _ = MoveWindow(
             state.about_button,
-            settings_left - scale(24) - width,
+            settings_left - scale(12) - width,
             rect.bottom - bottom_margin - height,
             width,
             height,
             true,
         );
-        let _ = SetWindowPos(
-            state.settings_button,
-            Some(HWND_TOP),
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-        );
+    }
+    set_main_tab_order(
+        state.timer_panel,
+        state.auto_hide_checkbox,
+        state.about_button,
+        state.settings_button,
+    );
+}
+
+pub(crate) fn set_main_tab_order(timer_panel: HWND, checkbox: HWND, about: HWND, settings: HWND) {
+    for control in [timer_panel, checkbox, about, settings] {
+        unsafe {
+            let _ = SetWindowPos(
+                control,
+                Some(HWND_BOTTOM),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
     }
 }
 
@@ -812,6 +818,7 @@ fn show_timer_panel(hwnd: HWND) {
             let _ = ShowWindow(state.auto_hide_checkbox, SW_SHOW);
         }
     }
+    layout_settings_button(hwnd);
 }
 
 fn toggle_settings(hwnd: HWND) {

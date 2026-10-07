@@ -7,7 +7,8 @@ use windows::{
         },
         UI::WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, GWLP_USERDATA, GetClientRect, IDC_ARROW, LoadCursorW, RegisterClassW,
-            SetWindowLongPtrW, WM_COMMAND, WM_ERASEBKGND, WM_NCCREATE, WM_PAINT, WNDCLASSW, WS_CHILD, WS_VISIBLE,
+            SetWindowLongPtrW, WM_COMMAND, WM_ERASEBKGND, WM_NCCREATE, WM_PAINT, WNDCLASSW, WS_CHILD,
+            WS_EX_CONTROLPARENT, WS_VISIBLE,
         },
     },
     core::{Error, Result, w},
@@ -37,7 +38,7 @@ pub fn register_timer_panel_class(instance: HINSTANCE) -> Result<()> {
 pub fn create_timer_panel(parent: HWND, instance: HINSTANCE) -> Result<HWND> {
     unsafe {
         CreateWindowExW(
-            Default::default(),
+            WS_EX_CONTROLPARENT,
             TIMER_PANEL_CLASS,
             w!(""),
             WS_CHILD | WS_VISIBLE,
@@ -178,7 +179,7 @@ mod tests {
     }
 
     #[test]
-    fn timer_panel_replaces_stale_cursor_with_arrow() {
+    fn main_controls_support_tab_keyboard_and_arrow_cursor() {
         unsafe {
             let instance: HINSTANCE = GetModuleHandleW(None).unwrap().into();
             let parent_class = w!("StandAwhileCursorTestParent");
@@ -208,6 +209,79 @@ mod tests {
             )
             .unwrap();
             let panel = create_timer_panel(parent, instance).unwrap();
+            {
+                use crate::ui::button::{
+                    ControlButton, button_from_command, create_control_buttons, register_button_class,
+                    update_control_buttons_for,
+                };
+                use crate::window_proc::{create_auto_hide_checkbox, process_dialog_message, set_main_tab_order};
+                use windows::Win32::UI::{
+                    Input::KeyboardAndMouse::{GetFocus, SetFocus, VK_RETURN, VK_SPACE, VK_TAB},
+                    WindowsAndMessaging::{
+                        DispatchMessageW, GetNextDlgTabItem, MSG, PM_REMOVE, PeekMessageW, WM_KEYDOWN, WM_KEYUP,
+                    },
+                };
+                register_button_class(instance).unwrap();
+                let buttons = create_control_buttons(panel, instance).unwrap();
+                let settings = crate::settings::create_settings_button(parent, instance, "Settings", None);
+                let about = crate::settings::create_about_button(parent, instance, "About", None);
+                let checkbox = create_auto_hide_checkbox(parent, instance, Language::English, None, true).unwrap();
+                set_main_tab_order(panel, checkbox, about, settings);
+                for enabled in [false, true] {
+                    update_control_buttons_for(&buttons, true, enabled, enabled);
+                    SetFocus(Some(parent)).unwrap();
+                    let mut expected = vec![buttons[0]];
+                    if enabled {
+                        expected.extend([buttons[1], buttons[2]]);
+                    }
+                    expected.extend([checkbox, about, settings, buttons[0]]);
+                    for target in expected {
+                        let message = MSG {
+                            hwnd: GetFocus(),
+                            message: WM_KEYDOWN,
+                            wParam: WPARAM(VK_TAB.0 as usize),
+                            ..Default::default()
+                        };
+                        assert!(process_dialog_message(parent, &message));
+                        assert_eq!(GetFocus(), target);
+                    }
+                    assert_eq!(GetNextDlgTabItem(parent, Some(buttons[0]), true).unwrap(), settings);
+                }
+                for (index, kind) in [ControlButton::Play, ControlButton::Pause, ControlButton::Reset]
+                    .into_iter()
+                    .enumerate()
+                {
+                    for key in [VK_SPACE, VK_RETURN] {
+                        SetFocus(Some(buttons[index])).unwrap();
+                        for message_id in [WM_KEYDOWN, WM_KEYDOWN, WM_KEYUP] {
+                            let message = MSG {
+                                hwnd: buttons[index],
+                                message: message_id,
+                                wParam: WPARAM(key.0 as usize),
+                                ..Default::default()
+                            };
+                            if !process_dialog_message(parent, &message) {
+                                DispatchMessageW(&message);
+                            }
+                        }
+                        let mut command = MSG::default();
+                        assert!(PeekMessageW(&mut command, Some(panel), WM_COMMAND, WM_COMMAND, PM_REMOVE).as_bool());
+                        DispatchMessageW(&command);
+                        assert!(PeekMessageW(&mut command, Some(parent), WM_COMMAND, WM_COMMAND, PM_REMOVE).as_bool());
+                        assert_eq!(button_from_command(command.wParam), Some(kind));
+                        assert!(!PeekMessageW(&mut command, Some(panel), WM_COMMAND, WM_COMMAND, PM_REMOVE).as_bool());
+                    }
+                }
+                SetFocus(Some(buttons[0])).unwrap();
+                SendMessageW(buttons[0], WM_KEYDOWN, Some(WPARAM(VK_SPACE.0 as usize)), None);
+                SetFocus(Some(checkbox)).unwrap();
+                SendMessageW(buttons[0], WM_KEYUP, Some(WPARAM(VK_SPACE.0 as usize)), None);
+                update_control_buttons_for(&buttons, true, false, false);
+                SendMessageW(buttons[1], WM_KEYDOWN, Some(WPARAM(VK_RETURN.0 as usize)), None);
+                SendMessageW(buttons[1], WM_KEYUP, Some(WPARAM(VK_RETURN.0 as usize)), None);
+                let mut command = MSG::default();
+                assert!(!PeekMessageW(&mut command, Some(panel), WM_COMMAND, WM_COMMAND, PM_REMOVE).as_bool());
+            }
             let previous_cursor = GetCursor();
             let mut actual_cursors = Vec::new();
             for initial_cursor in [IDC_WAIT, IDC_HAND] {

@@ -52,7 +52,7 @@ use ui::{
     theme::apply_theme,
 };
 use window_proc::{
-    WindowState, attach_window_state, create_auto_hide_checkbox, layout_window_state, process_settings_message,
+    WindowState, attach_window_state, create_auto_hide_checkbox, layout_window_state, process_dialog_message,
     set_initial_remaining_seconds, window_proc,
 };
 
@@ -212,7 +212,7 @@ fn run() -> Result<()> {
             break;
         }
 
-        if process_settings_message(hwnd, &message) {
+        if process_dialog_message(hwnd, &message) {
             continue;
         }
 
