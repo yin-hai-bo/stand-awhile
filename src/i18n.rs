@@ -38,6 +38,13 @@ pub fn pet_reminder_text(language: Language) -> &'static str {
     }
 }
 
+pub fn timer_hint_text(language: Language) -> &'static str {
+    match language {
+        Language::Chinese => "倒计时结束后，小伙伴会提醒你起来活动活动。",
+        Language::English => "When the countdown ends, your pet will remind you to get up and stretch.",
+    }
+}
+
 fn detect_language_from_lang_id(lang_id: u16) -> Language {
     let primary_language = lang_id & 0x03ff;
     if primary_language == LANG_CHINESE_PRIMARY_ID {

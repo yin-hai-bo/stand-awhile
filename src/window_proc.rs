@@ -608,7 +608,7 @@ fn refresh_window_state(hwnd: HWND) {
     }
 }
 
-fn window_state(hwnd: HWND) -> Option<&'static WindowState> {
+pub(crate) fn window_state(hwnd: HWND) -> Option<&'static WindowState> {
     let raw = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const WindowState;
     unsafe { raw.as_ref() }
 }
@@ -756,6 +756,9 @@ fn apply_saved_settings(hwnd: HWND) {
     let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
     if let Some(state) = window_state_mut(hwnd) {
         state.language = language;
+        unsafe {
+            let _ = InvalidateRect(Some(state.timer_panel), None, false);
+        }
         state.tray_when_close = config.tray_when_close;
         state.theme = config.theme();
         refresh_theme(hwnd, state.theme);

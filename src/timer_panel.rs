@@ -1,7 +1,10 @@
 use windows::{
     Win32::{
         Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
-        Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT},
+        Graphics::Gdi::{
+            BeginPaint, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DrawTextW, EndPaint, HDC, PAINTSTRUCT, SelectObject,
+            SetBkMode, SetTextColor, TRANSPARENT,
+        },
         UI::WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, GWLP_USERDATA, GetClientRect, IDC_ARROW, LoadCursorW, RegisterClassW,
             SetWindowLongPtrW, WM_COMMAND, WM_ERASEBKGND, WM_NCCREATE, WM_PAINT, WNDCLASSW, WS_CHILD, WS_VISIBLE,
@@ -10,7 +13,9 @@ use windows::{
     core::{Error, Result, w},
 };
 
+use crate::i18n::{Language, timer_hint_text};
 use crate::settings::SETTINGS_BUTTON_RESERVED_HEIGHT;
+use crate::ui::{button::controls_rect, font::common_gui_font, theme::is_dark_theme_active};
 use crate::ui::{draw_countdown, theme::paint_background};
 
 const TIMER_PANEL_CLASS: windows::core::PCWSTR = w!("YHB-StandAwhileTimerPanel");
@@ -77,6 +82,7 @@ unsafe extern "system" fn timer_panel_proc(hwnd: HWND, msg: u32, wparam: WPARAM,
             let hdc = unsafe { BeginPaint(hwnd, &mut paint) };
             let _ = paint_background(&paint.rcPaint, hdc);
             let _ = draw_countdown(hwnd, hdc, crate::window_proc::remaining_seconds());
+            let _ = draw_timer_hint(hwnd, hdc);
             unsafe {
                 let _ = EndPaint(hwnd, &paint);
             }
@@ -96,6 +102,33 @@ unsafe extern "system" fn timer_panel_proc(hwnd: HWND, msg: u32, wparam: WPARAM,
     }
 }
 
+fn draw_timer_hint(hwnd: HWND, hdc: HDC) -> Result<()> {
+    let parent = unsafe { windows::Win32::UI::WindowsAndMessaging::GetParent(hwnd)? };
+    let Some(state) = crate::window_proc::window_state(parent) else {
+        return Ok(());
+    };
+    let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd) }.max(96);
+    let Some(font) = common_gui_font(dpi, state.language == Language::Chinese) else {
+        return Ok(());
+    };
+    let mut rect = RECT::default();
+    unsafe { GetClientRect(hwnd, &mut rect)? };
+    rect.left += 16 * dpi as i32 / 96;
+    rect.right -= 16 * dpi as i32 / 96;
+    rect.top = controls_rect(hwnd)?.bottom + 16 * dpi as i32 / 96;
+    rect.bottom = rect.top + 32 * dpi as i32 / 96;
+    let mut text: Vec<u16> = timer_hint_text(state.language).encode_utf16().collect();
+    let shade = if is_dark_theme_active() { 170 } else { 100 };
+    unsafe {
+        let old_font = SelectObject(hdc, font.into());
+        let _ = SetBkMode(hdc, TRANSPARENT);
+        let _ = SetTextColor(hdc, windows::Win32::Foundation::COLORREF(shade * 0x010101));
+        let _ = DrawTextW(hdc, &mut text, &mut rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        let _ = SelectObject(hdc, old_font);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,6 +142,29 @@ mod tests {
 
     unsafe extern "system" fn parent_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+    }
+
+    #[test]
+    fn localized_hint_fits_on_one_line_at_supported_dpis() {
+        use windows::Win32::Graphics::Gdi::{DT_CALCRECT, GetDC, ReleaseDC};
+        let hdc = unsafe { GetDC(None) };
+        assert!(!hdc.is_invalid());
+        for dpi in [96, 120, 144, 192] {
+            for language in [Language::Chinese, Language::English] {
+                let font = common_gui_font(dpi, language == Language::Chinese).unwrap();
+                let mut text: Vec<u16> = timer_hint_text(language).encode_utf16().collect();
+                let mut measured = RECT::default();
+                unsafe {
+                    let old = SelectObject(hdc, font.into());
+                    DrawTextW(hdc, &mut text, &mut measured, DT_CALCRECT | DT_SINGLELINE);
+                    SelectObject(hdc, old);
+                }
+                assert!(measured.right > 0);
+                assert!(measured.right <= (crate::WINDOW_WIDTH - 64) * dpi as i32 / 96);
+                assert!(measured.bottom <= 32 * dpi as i32 / 96);
+            }
+        }
+        unsafe { ReleaseDC(None, hdc) };
     }
 
     #[test]

@@ -204,7 +204,6 @@ impl PetWindow {
         let state = state_mut(pet.hwnd).ok_or_else(Error::from_win32)?;
         update_frame(state)?;
         unsafe {
-            let _ = ShowWindow(pet.hwnd, SW_SHOWNOACTIVATE);
             let _ = SetTimer(Some(pet.hwnd), PET_TIMER_ID, PET_TIMER_INTERVAL_MS, None);
         }
         Ok(pet)
@@ -1099,6 +1098,8 @@ mod tests {
             "Settings",
         )
         .unwrap();
+        assert!(!unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(pet.hwnd).as_bool() });
+        pet.show();
         let mut rect = RECT::default();
         unsafe { GetWindowRect(pet.hwnd, &mut rect) }.unwrap();
         // Place an ordinary window over the Pet without changing foreground focus.
