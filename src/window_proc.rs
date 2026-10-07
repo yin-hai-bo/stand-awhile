@@ -44,10 +44,10 @@ use windows::Win32::{
         BM_GETCHECK, BM_SETCHECK, BN_CLICKED, BS_AUTOCHECKBOX, CreateWindowExW, DefWindowProcW, DestroyWindow,
         GWLP_USERDATA, GetClientRect, GetWindowLongPtrW, HMENU, HWND_BOTTOM, HWND_TOP, IDC_HAND, IsDialogMessageW,
         IsWindow, IsWindowVisible, KillTimer, LoadCursorW, MSG, MoveWindow, PostQuitMessage, SW_HIDE, SW_SHOW,
-        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetCursor, SetForegroundWindow, SetTimer,
-        SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, WINDOW_STYLE, WM_CLOSE, WM_COMMAND,
-        WM_CTLCOLORBTN, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_NCDESTROY, WM_PAINT,
-        WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE, WM_THEMECHANGED, WM_TIMER, WS_CHILD, WS_TABSTOP, WS_VISIBLE,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetCursor, SetTimer, SetWindowLongPtrW,
+        SetWindowPos, SetWindowTextW, ShowWindow, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN,
+        WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_NCDESTROY, WM_PAINT, WM_SETCURSOR,
+        WM_SETTINGCHANGE, WM_SIZE, WM_THEMECHANGED, WM_TIMER, WS_CHILD, WS_TABSTOP, WS_VISIBLE,
     },
 };
 
@@ -251,10 +251,7 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
                 PET_COMMAND_START => activate_button(hwnd, ControlButton::Play),
                 PET_COMMAND_SETTINGS => open_settings(hwnd),
                 PET_COMMAND_ABOUT => open_about(hwnd),
-                PET_COMMAND_SHOW_MAIN => unsafe {
-                    let _ = ShowWindow(hwnd, SW_SHOW);
-                    let _ = SetForegroundWindow(hwnd);
-                },
+                PET_COMMAND_SHOW_MAIN => crate::tray_icon::show_main_window(hwnd),
                 PET_COMMAND_EXIT => unsafe {
                     let _ = DestroyWindow(hwnd);
                 },
@@ -774,10 +771,7 @@ fn open_about(hwnd: HWND) {
 }
 
 fn open_settings(hwnd: HWND) {
-    unsafe {
-        let _ = ShowWindow(hwnd, SW_SHOW);
-        let _ = SetForegroundWindow(hwnd);
-    }
+    crate::tray_icon::show_main_window(hwnd);
     let Some(state) = window_state(hwnd) else {
         return;
     };
@@ -1113,7 +1107,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_instance_restores_main_window_without_changing_timer() {
+    fn restore_commands_show_hidden_or_minimized_main_window_without_changing_timer() {
         use windows::Win32::{
             System::LibraryLoader::GetModuleHandleW,
             UI::WindowsAndMessaging::{
@@ -1155,13 +1149,20 @@ mod tests {
                 *TIMER_STATE.lock().unwrap() = state;
                 REMAINING_SECONDS.store(remaining, Ordering::Relaxed);
                 for presentation in [SW_HIDE, SW_SHOWMINNOACTIVE] {
-                    let _ = ShowWindow(hwnd, presentation);
-                    assert!(!IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool());
-                    SendMessageW(hwnd, crate::single_instance::WM_SHOW_EXISTING_INSTANCE, None, None);
-                    assert!(IsWindowVisible(hwnd).as_bool());
-                    assert!(!IsIconic(hwnd).as_bool());
-                    assert_eq!(*TIMER_STATE.lock().unwrap(), state);
-                    assert_eq!(REMAINING_SECONDS.load(Ordering::Relaxed), remaining);
+                    for (message, command) in [
+                        (crate::single_instance::WM_SHOW_EXISTING_INSTANCE, 0),
+                        (WM_PET_COMMAND, PET_COMMAND_SHOW_MAIN),
+                        (WM_PET_COMMAND, PET_COMMAND_SETTINGS),
+                        (WM_COMMAND, TRAY_MENU_SETTINGS_ID),
+                    ] {
+                        let _ = ShowWindow(hwnd, presentation);
+                        assert!(!IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool());
+                        SendMessageW(hwnd, message, Some(WPARAM(command)), None);
+                        assert!(IsWindowVisible(hwnd).as_bool());
+                        assert!(!IsIconic(hwnd).as_bool(), "message={message}, command={command}");
+                        assert_eq!(*TIMER_STATE.lock().unwrap(), state);
+                        assert_eq!(REMAINING_SECONDS.load(Ordering::Relaxed), remaining);
+                    }
                 }
             }
             DestroyWindow(hwnd).unwrap();
