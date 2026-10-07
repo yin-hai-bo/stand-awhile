@@ -1,6 +1,5 @@
 use std::sync::OnceLock;
 
-use crate::ui::component::Component;
 use crate::ui::theme::{is_dark_theme_active, paint_background};
 use windows::Win32::{
     Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
@@ -32,7 +31,6 @@ const LINK_MEASURE_EXTRA_HEIGHT: i32 = 4;
 static HYPER_LINK_TEXT_CLASS_REGISTRATION: OnceLock<std::result::Result<(), i32>> = OnceLock::new();
 
 type HyperLinkCallback = Box<dyn FnMut(HWND)>;
-pub type HyperLinkTextLayout = fn(&HyperLinkText, HWND, HDC) -> Result<()>;
 
 struct HyperLinkTextCreateParams {
     text: String,
@@ -60,19 +58,10 @@ impl Drop for HyperLinkTextState {
 pub struct HyperLinkText {
     hwnd: HWND,
     text: String,
-    layout: HyperLinkTextLayout,
 }
 
-#[allow(dead_code)]
 impl HyperLinkText {
-    pub fn create<F>(
-        parent: HWND,
-        text: &str,
-        base_font: HFONT,
-        dpi: u32,
-        on_click: F,
-        layout: HyperLinkTextLayout,
-    ) -> Result<Self>
+    pub fn create<F>(parent: HWND, text: &str, base_font: HFONT, dpi: u32, on_click: F) -> Result<Self>
     where
         F: FnMut(HWND) + 'static,
     {
@@ -113,7 +102,6 @@ impl HyperLinkText {
         let link = Self {
             hwnd,
             text: text.to_owned(),
-            layout,
         };
         if let Err(error) = link.set_font(base_font, dpi) {
             unsafe {
@@ -124,33 +112,14 @@ impl HyperLinkText {
         Ok(link)
     }
 
-    pub fn from_hwnd(hwnd: HWND) -> Result<Self> {
-        let state = hyper_link_state(hwnd).ok_or_else(Error::from_win32)?;
-        Ok(Self {
-            hwnd,
-            text: state.text.clone(),
-            layout: default_hyper_link_text_layout,
-        })
-    }
-
+    #[cfg(test)]
     pub fn hwnd(&self) -> HWND {
         self.hwnd
     }
 
+    #[cfg(test)]
     pub fn text(&self) -> &str {
         &self.text
-    }
-
-    pub fn set_text(&mut self, text: &str) -> Result<()> {
-        let state = hyper_link_state_mut(self.hwnd).ok_or_else(Error::from_win32)?;
-        state.text.clear();
-        state.text.push_str(text);
-        self.text.clear();
-        self.text.push_str(text);
-        unsafe {
-            let _ = InvalidateRect(Some(self.hwnd), None, false);
-        }
-        Ok(())
     }
 
     pub fn move_to(&self, rect: RECT) -> Result<()> {
@@ -201,16 +170,6 @@ impl HyperLinkText {
     }
 }
 
-impl Component for HyperLinkText {
-    fn layout(&self, parent: HWND, dc: HDC) -> Result<()> {
-        (self.layout)(self, parent, dc)
-    }
-
-    fn invalidate(&self) {
-        HyperLinkText::invalidate(self);
-    }
-}
-
 fn register_hyper_link_text_class(instance: HINSTANCE) -> Result<()> {
     let class = WNDCLASSW {
         lpfnWndProc: Some(hyper_link_text_window_proc),
@@ -229,10 +188,6 @@ fn register_hyper_link_text_class(instance: HINSTANCE) -> Result<()> {
 
 fn current_module_instance() -> Result<HINSTANCE> {
     Ok(unsafe { GetModuleHandleW(None)? }.into())
-}
-
-fn default_hyper_link_text_layout(_: &HyperLinkText, _: HWND, _: HDC) -> Result<()> {
-    Ok(())
 }
 
 fn ensure_hyper_link_text_class_registered(instance: HINSTANCE) -> Result<()> {

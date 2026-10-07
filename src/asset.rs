@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    fmt,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -28,6 +29,15 @@ pub enum AssetError {
     Manifest(serde_json::Error),
     InvalidManifest(String),
     Decode(String),
+}
+
+impl fmt::Display for AssetError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Manifest(error) => write!(formatter, "Could not parse pet manifest: {error}"),
+            Self::InvalidManifest(message) | Self::Decode(message) => formatter.write_str(message),
+        }
+    }
 }
 
 impl From<serde_json::Error> for AssetError {
@@ -66,10 +76,6 @@ impl FrameHitbox {
             bottom,
         })
     }
-
-    pub(crate) fn contains(&self, x: u32, y: u32) -> bool {
-        x >= self.left && x < self.right && y >= self.top && y < self.bottom
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,10 +106,6 @@ pub struct CharacterCatalog {
 impl CharacterCatalog {
     pub fn get(&self, character_id: &str) -> Option<&CharacterAnimations> {
         self.characters.get(character_id)
-    }
-
-    pub fn character_ids(&self) -> impl Iterator<Item = &str> {
-        self.characters.keys().map(String::as_str)
     }
 }
 
@@ -144,13 +146,6 @@ pub fn load_character_catalog(_gdi_plus: &GdiPlus) -> Result<CharacterCatalog, A
     }
 
     Ok(CharacterCatalog { characters })
-}
-
-pub fn load_cat_animations(_gdi_plus: &GdiPlus) -> Result<CharacterAnimations, AssetError> {
-    load_character_catalog(_gdi_plus)?
-        .characters
-        .remove("cat")
-        .ok_or_else(|| AssetError::InvalidManifest("missing cat character".to_owned()))
 }
 
 fn load_character_animations(
@@ -340,7 +335,7 @@ fn ensure_gdiplus_ok(status: Status, operation: &str) -> Result<(), AssetError> 
 
 #[cfg(test)]
 mod tests {
-    use super::{FrameHitbox, copy_premultiplied_pixels, load_cat_animations, load_manifest, premultiply};
+    use super::{FrameHitbox, copy_premultiplied_pixels, load_character_catalog, load_manifest, premultiply};
     use std::ptr::null_mut;
     use windows::Win32::Graphics::GdiPlus::BitmapData;
 
@@ -369,7 +364,8 @@ mod tests {
     #[test]
     fn loads_embedded_frames_for_every_manifest_animation() {
         let gdi_plus = crate::ui::GdiPlus::new().expect("GDI+ should initialize");
-        let assets = load_cat_animations(&gdi_plus).expect("checked-in cat assets should load");
+        let catalog = load_character_catalog(&gdi_plus).expect("checked-in pet assets should load");
+        let assets = catalog.get("cat").expect("cat should be present");
 
         assert_eq!(assets.idle.frames.len(), 10);
         assert_eq!(assets.walk.frames.len(), 10);
@@ -380,7 +376,6 @@ mod tests {
         );
         assert!(assets.idle.frames[0].pixels.chunks_exact(4).any(|pixel| pixel[3] != 0));
 
-        let catalog = super::load_character_catalog(&gdi_plus).unwrap();
         for character in ["cat", "dog"] {
             let animations = catalog.get(character).unwrap();
             assert_eq!(animations.idle.frames.len(), 10);
@@ -482,7 +477,5 @@ mod tests {
                 bottom: 2
             }
         );
-        assert!(!hitbox.contains(0, 0));
-        assert!(hitbox.contains(1, 1));
     }
 }

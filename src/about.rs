@@ -179,16 +179,9 @@ fn initialize_about_window(hwnd: HWND, language: Language, theme: Theme) -> Resu
         }
         return Err(error);
     };
-    let github_link = match HyperLinkText::create(
-        hwnd,
-        GITHUB_URL,
-        body_font,
-        dpi,
-        |hwnd| {
-            let _ = open_url(hwnd, GITHUB_URL);
-        },
-        about_link_layout,
-    ) {
+    let github_link = match HyperLinkText::create(hwnd, GITHUB_URL, body_font, dpi, |hwnd| {
+        let _ = open_url(hwnd, GITHUB_URL);
+    }) {
         Ok(link) => link,
         Err(error) => {
             unsafe {
@@ -201,16 +194,9 @@ fn initialize_about_window(hwnd: HWND, language: Language, theme: Theme) -> Resu
     let credit_links = credit_link_specs()
         .into_iter()
         .map(|(text, url)| {
-            HyperLinkText::create(
-                hwnd,
-                text,
-                body_font,
-                dpi,
-                move |hwnd| {
-                    let _ = open_url(hwnd, url);
-                },
-                about_link_layout,
-            )
+            HyperLinkText::create(hwnd, text, body_font, dpi, move |hwnd| {
+                let _ = open_url(hwnd, url);
+            })
         })
         .collect::<Result<Vec<_>>>();
     let credit_links = match credit_links {
@@ -650,10 +636,6 @@ fn create_title_font(body_font: HFONT) -> Result<HFONT> {
     }
 }
 
-fn about_link_layout(_: &HyperLinkText, _: HWND, _: HDC) -> Result<()> {
-    Ok(())
-}
-
 fn open_url(hwnd: HWND, url: &str) -> Result<()> {
     let url = wide_null(url);
     let result = unsafe { ShellExecuteW(Some(hwnd), w!("open"), PCWSTR(url.as_ptr()), None, None, SW_SHOWNORMAL) };
@@ -903,7 +885,7 @@ mod tests {
             crate::scale_dimension(536, initial_dpi)
         );
         let other_font = common_gui_font(96, language == Language::Chinese).unwrap();
-        let other_link = HyperLinkText::create(window.0, GITHUB_URL, other_font, 96, |_| {}, about_link_layout)?;
+        let other_link = HyperLinkText::create(window.0, GITHUB_URL, other_font, 96, |_| {})?;
         for dpi in [144usize, 192, 96, 144] {
             let suggested = RECT {
                 left: 20,

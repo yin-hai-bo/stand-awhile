@@ -214,7 +214,6 @@ impl PetWindow {
         Ok(pet)
     }
 
-    #[allow(dead_code)]
     pub fn hide(&self) {
         if let Some(state) = state_mut(self.hwnd) {
             cancel_show_animation(state);
@@ -233,27 +232,6 @@ impl PetWindow {
             return Ok(());
         }
         begin_hide_animation(self.hwnd, state)
-    }
-
-    #[allow(dead_code)]
-    pub fn show(&self) {
-        if let Some(state) = state_mut(self.hwnd) {
-            cancel_show_animation(state);
-            cancel_hide_animation(state);
-            let now = Instant::now();
-            state.speech_bubble.hide();
-            state.speech_bubble.start(now, SPEECH_BUBBLE_INITIAL_DELAY);
-            sync_bubble_animation(state, false, now);
-            let _ = update_frame(state);
-            let size = (state.surface.width() as i32, state.surface.height() as i32);
-            let position = monitor_work_area(self.hwnd)
-                .map(|work_area| clamp_position(state.position, size, work_area))
-                .unwrap_or(state.position);
-            let _ = set_position(self.hwnd, state, position);
-        }
-        unsafe {
-            let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
-        }
     }
 
     pub fn show_reminder(&self) -> Result<()> {
@@ -1104,7 +1082,9 @@ mod tests {
         )
         .unwrap();
         assert!(!unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(pet.hwnd).as_bool() });
-        pet.show();
+        unsafe {
+            let _ = ShowWindow(pet.hwnd, SW_SHOWNOACTIVATE);
+        }
         let mut rect = RECT::default();
         unsafe { GetWindowRect(pet.hwnd, &mut rect) }.unwrap();
         // Place an ordinary window over the Pet without changing foreground focus.
@@ -1152,7 +1132,9 @@ mod tests {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             check_topmost();
             pet.hide();
-            pet.show();
+            unsafe {
+                let _ = ShowWindow(pet.hwnd, SW_SHOWNOACTIVATE);
+            }
             check_topmost();
             let state = state_mut(pet.hwnd).unwrap();
             set_position(pet.hwnd, state, state.position).unwrap();
@@ -1295,12 +1277,19 @@ mod tests {
     }
 
     #[test]
-    fn showing_pet_restarts_with_walk_and_drag_does_not_override_it() {
+    fn reminder_transitions_to_walk_and_drag_preserves_bubble_animation() {
         use super::*;
+        use crate::animation::{AnimationClip, Frame, LoopMode};
         let pet = hidden_test_pet();
+        state_mut(pet.hwnd).unwrap().jump.clip =
+            AnimationClip::new(vec![Frame { id: 0 }], Duration::from_millis(120), LoopMode::Once).unwrap();
         sync_bubble_animation(state_mut(pet.hwnd).unwrap(), true, Instant::now());
-        pet.show();
+        pet.show_reminder().unwrap();
         let state = state_mut(pet.hwnd).unwrap();
+        assert_eq!(state.active_clip, ActiveClip::Jump);
+        let now = state.show_animation.as_ref().unwrap().started_at + Duration::from_millis(180);
+        update_show_animation(pet.hwnd, state, now).unwrap();
+        update_frame_at(state, now).unwrap();
         assert_eq!(state.active_clip, ActiveClip::Walk);
         assert!(!state.speech_bubble.is_visible());
         begin_drag(pet.hwnd, state).unwrap();

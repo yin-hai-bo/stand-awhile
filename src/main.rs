@@ -3,15 +3,13 @@
 mod about;
 mod animation;
 mod app_state;
-#[allow(dead_code)]
-pub(crate) mod asset;
+mod asset;
 mod autostart;
 mod config;
 mod gdi;
 mod i18n;
 mod persistence;
 mod pet_window;
-#[allow(dead_code)]
 mod render;
 mod settings;
 mod single_instance;
@@ -146,7 +144,7 @@ fn run() -> Result<()> {
     let catalog = load_character_catalog(&gdi_plus).map_err(|error| {
         Error::new(
             windows::core::HRESULT(0x8000_4005u32 as i32),
-            format!("Could not load pet assets: {error:?}"),
+            format!("Could not load pet assets: {error}"),
         )
     })?;
     let animations = catalog
