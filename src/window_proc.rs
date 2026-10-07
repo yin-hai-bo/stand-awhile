@@ -685,6 +685,19 @@ fn layout_settings_button(hwnd: HWND) {
         state.about_button,
         state.settings_button,
     );
+    if unsafe { IsWindowVisible(state.settings_panel).as_bool() } {
+        unsafe {
+            let _ = SetWindowPos(
+                state.settings_button,
+                Some(HWND_TOP),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+    }
 }
 
 pub(crate) fn set_main_tab_order(timer_panel: HWND, checkbox: HWND, about: HWND, settings: HWND) {

@@ -9,16 +9,18 @@ use windows::{
             SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
         },
         UI::{
-            Controls::{BST_CHECKED, DRAWITEMSTRUCT, ODS_FOCUS, ODS_NOFOCUSRECT, ODS_SELECTED},
+            Controls::{BST_CHECKED, DRAWITEMSTRUCT, ODS_FOCUS, ODS_NOFOCUSRECT, ODS_SELECTED, WM_MOUSELEAVE},
             HiDpi::GetDpiForWindow,
-            Input::KeyboardAndMouse::SetFocus,
+            Input::KeyboardAndMouse::{SetFocus, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent},
+            Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
             WindowsAndMessaging::{
                 BM_GETCHECK, BM_SETCHECK, BN_CLICKED, BS_AUTORADIOBUTTON, BS_OWNERDRAW, CREATESTRUCTW, CreateWindowExW,
                 DefWindowProcW, DestroyWindow, EN_CHANGE, EN_KILLFOCUS, ES_NUMBER, GWLP_USERDATA, GetWindowLongPtrW,
-                GetWindowTextLengthW, GetWindowTextW, HMENU, IDC_ARROW, LoadCursorW, RegisterClassExW, SendMessageW,
-                SetWindowLongPtrW, SetWindowTextW, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLOREDIT,
-                WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_ERASEBKGND, WM_NCACTIVATE, WM_NCDESTROY, WM_SETFOCUS,
-                WM_SETFONT, WNDCLASSEXW, WS_CHILD, WS_EX_CONTROLPARENT, WS_GROUP, WS_TABSTOP, WS_VISIBLE,
+                GetWindowTextLengthW, GetWindowTextW, HMENU, IDC_ARROW, IDC_HAND, LoadCursorW, RegisterClassExW,
+                SendMessageW, SetCursor, SetWindowLongPtrW, SetWindowTextW, WM_CLOSE, WM_COMMAND, WM_CREATE,
+                WM_CTLCOLORBTN, WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_ERASEBKGND, WM_MOUSEMOVE,
+                WM_NCACTIVATE, WM_NCDESTROY, WM_SETCURSOR, WM_SETFOCUS, WM_SETFONT, WNDCLASSEXW, WS_CHILD,
+                WS_EX_CONTROLPARENT, WS_GROUP, WS_TABSTOP, WS_VISIBLE,
             },
         },
     },
@@ -50,6 +52,7 @@ const AUTO_HIDE_YES_ID: usize = 21;
 const AUTO_HIDE_NO_ID: usize = 22;
 const STARTUP_YES_ID: usize = 23;
 const STARTUP_NO_ID: usize = 24;
+const RESET_DEFAULTS_ID: usize = 25;
 const SETTINGS_TITLE_COUNT: usize = 7;
 
 const BASE_GRID_LEFT: i32 = 72;
@@ -73,6 +76,8 @@ struct SettingsState {
     close_behavior: [HWND; 2],
     auto_hide: [HWND; 2],
     launch_at_startup: [HWND; 2],
+    reset_defaults: HWND,
+    reset_defaults_hovered: bool,
     font: Option<HFONT>,
     title_font: Option<HFONT>,
     font_controls: Vec<HWND>,
@@ -116,6 +121,8 @@ pub fn create_settings_panel(parent: HWND, instance: HINSTANCE, config: Config, 
         close_behavior: [HWND::default(); 2],
         auto_hide: [HWND::default(); 2],
         launch_at_startup: [HWND::default(); 2],
+        reset_defaults: HWND::default(),
+        reset_defaults_hovered: false,
         font,
         title_font: None,
         font_controls: Vec::new(),
@@ -129,7 +136,7 @@ pub fn create_settings_panel(parent: HWND, instance: HINSTANCE, config: Config, 
             WS_EX_CONTROLPARENT,
             SETTINGS_CLASS,
             w!("Settings"),
-            WS_CHILD | WS_VISIBLE,
+            WS_CHILD | WS_VISIBLE | windows::Win32::UI::WindowsAndMessaging::WS_CLIPSIBLINGS,
             0,
             0,
             1,
@@ -145,17 +152,9 @@ pub fn create_settings_panel(parent: HWND, instance: HINSTANCE, config: Config, 
 pub fn resize_settings_panel(hwnd: HWND, parent: HWND) -> Result<()> {
     let mut rect = RECT::default();
     let dpi = unsafe { GetDpiForWindow(parent) }.max(96);
-    let reserved_height = SETTINGS_BUTTON_RESERVED_HEIGHT * dpi as i32 / 96;
     unsafe {
         windows::Win32::UI::WindowsAndMessaging::GetClientRect(parent, &mut rect)?;
-        windows::Win32::UI::WindowsAndMessaging::MoveWindow(
-            hwnd,
-            0,
-            0,
-            rect.right,
-            (rect.bottom - reserved_height).max(0),
-            true,
-        )?;
+        windows::Win32::UI::WindowsAndMessaging::MoveWindow(hwnd, 0, 0, rect.right, rect.bottom, true)?;
     }
     layout_settings_panel(hwnd, dpi);
     Ok(())
@@ -244,6 +243,17 @@ pub fn layout_settings_panel(hwnd: HWND, dpi: u32) {
         row_height,
         dpi,
     );
+    let mut rect = RECT::default();
+    if unsafe { windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rect) }.is_ok() {
+        // Match the footer Back button, with a 12-DIP gap on its left.
+        move_control(
+            state.reset_defaults,
+            rect.right - scale(12 + 96 + 12 + 128),
+            rect.bottom - scale(32 + 32),
+            scale(128),
+            scale(32),
+        );
+    }
 }
 
 fn layout_radio_group(radios: &[HWND], x: i32, y: i32, width: i32, height: i32, dpi: u32) {
@@ -375,6 +385,16 @@ unsafe extern "system" fn settings_window_proc(hwnd: HWND, msg: u32, wparam: WPA
             }
             LRESULT(0)
         }
+        windows::Win32::UI::WindowsAndMessaging::WM_DRAWITEM => {
+            if let Some(state) = state_mut(hwnd) {
+                let item = unsafe { &*(lparam.0 as *const DRAWITEMSTRUCT) };
+                if item.CtlID as usize == RESET_DEFAULTS_ID {
+                    draw_settings_button(item, state.dark_mode, state.reset_defaults_hovered, state.font);
+                    return LRESULT(1);
+                }
+            }
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
         WM_COMMAND => {
             let id = (wparam.0 & 0xFFFF) as usize;
             let notification = ((wparam.0 >> 16) & 0xFFFF) as u32;
@@ -394,6 +414,36 @@ unsafe extern "system" fn settings_window_proc(hwnd: HWND, msg: u32, wparam: WPA
             }
             if notification == BN_CLICKED {
                 match id {
+                    RESET_DEFAULTS_ID => {
+                        let result =
+                            Config::load().and_then(|previous| reset_to_defaults(hwnd, previous, Config::save));
+                        if let Err(error) = result {
+                            if let Some(state) = state_mut(hwnd) {
+                                let message = match state.config.language() {
+                                    crate::i18n::Language::Chinese => format!("重置为默认值失败。\n{error}"),
+                                    crate::i18n::Language::English => format!("Could not reset to defaults.\n{error}"),
+                                };
+                                unsafe {
+                                    use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
+                                    let _ = MessageBoxW(
+                                        Some(hwnd),
+                                        PCWSTR(wide(&message).as_ptr()),
+                                        PCWSTR(wide(crate::i18n::main_window_title(state.config.language())).as_ptr()),
+                                        MB_OK | MB_ICONERROR,
+                                    );
+                                }
+                            }
+                        } else if let Some(state) = state_mut(hwnd) {
+                            unsafe {
+                                let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                                    Some(state.parent),
+                                    WM_COMMAND,
+                                    WPARAM(SETTINGS_CHANGED_ID),
+                                    LPARAM(0),
+                                );
+                            }
+                        }
+                    }
                     STARTUP_YES_ID | STARTUP_NO_ID => {
                         if let Some(state) = state_mut(hwnd) {
                             let result = Config::load().and_then(|previous| {
@@ -591,6 +641,25 @@ fn create_controls(hwnd: HWND, state: &mut SettingsState) {
             false,
         ),
     ];
+    state.reset_defaults = create_button_with_style(
+        hwnd,
+        state.instance,
+        RESET_DEFAULTS_ID,
+        reset_defaults_text(state.config.language()),
+        BS_OWNERDRAW as u32 | WS_GROUP.0,
+        0,
+        0,
+        1,
+        1,
+    );
+    unsafe {
+        let _ = SetWindowSubclass(
+            state.reset_defaults,
+            Some(reset_defaults_subclass),
+            RESET_DEFAULTS_ID,
+            hwnd.0 as usize,
+        );
+    }
     let label = create_static(
         hwnd,
         state.instance,
@@ -658,7 +727,21 @@ fn create_controls(hwnd: HWND, state: &mut SettingsState) {
     font_controls.extend(state.close_behavior);
     font_controls.extend(state.auto_hide);
     font_controls.extend(state.launch_at_startup);
+    font_controls.push(state.reset_defaults);
     state.font_controls = font_controls;
+    populate_config_controls(state);
+    replace_title_font(state);
+    for control in &state.font_controls {
+        set_font(*control, state.font);
+    }
+    for title in &state.font_controls[..SETTINGS_TITLE_COUNT] {
+        set_font(*title, state.title_font);
+    }
+}
+
+fn populate_config_controls(state: &mut SettingsState) {
+    set_window_text(state.period, &period_minutes(state.config.period).to_string());
+    state.period_changed = false;
     set_radio_group(&state.character, &state.config.character, &["cat", "dog"]);
     set_radio_group(&state.language, &state.config.language, &["auto", "zh", "en"]);
     set_radio_group(&state.theme, &state.config.theme, &["system", "light", "dark"]);
@@ -672,18 +755,11 @@ fn create_controls(hwnd: HWND, state: &mut SettingsState) {
         if state.config.auto_hide_on_start { "yes" } else { "no" },
         &["yes", "no"],
     );
-    replace_title_font(state);
     set_radio_group(
         &state.launch_at_startup,
         if state.config.launch_at_startup { "yes" } else { "no" },
         &["yes", "no"],
     );
-    for control in &state.font_controls {
-        set_font(*control, state.font);
-    }
-    for title in &state.font_controls[..SETTINGS_TITLE_COUNT] {
-        set_font(*title, state.title_font);
-    }
 }
 
 pub fn update_settings_panel_font(hwnd: HWND, dpi: u32) {
@@ -769,6 +845,7 @@ pub fn update_settings_panel_language(hwnd: HWND, language: crate::i18n::Languag
     for (control, text) in state.launch_at_startup.iter().zip(auto_hide_options) {
         set_control_text(*control, text);
     }
+    set_control_text(state.reset_defaults, reset_defaults_text(language));
     set_window_text(hwnd, if chinese { "设置" } else { "Settings" });
 }
 
@@ -876,6 +953,49 @@ pub fn update_settings_button_font(hwnd: HWND, font: Option<HFONT>) {
     set_font(hwnd, font);
 }
 
+unsafe extern "system" fn reset_defaults_subclass(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    id: usize,
+    panel: usize,
+) -> LRESULT {
+    match message {
+        WM_SETCURSOR => {
+            unsafe {
+                let _ = SetCursor(Some(LoadCursorW(None, IDC_HAND).unwrap_or_default()));
+            }
+            return LRESULT(1);
+        }
+        WM_MOUSEMOVE | WM_MOUSELEAVE => {
+            if let Some(state) = state_mut(HWND(panel as _)) {
+                let hovered = message == WM_MOUSEMOVE;
+                if state.reset_defaults_hovered != hovered {
+                    state.reset_defaults_hovered = hovered;
+                    unsafe {
+                        if hovered {
+                            let mut tracking = TRACKMOUSEEVENT {
+                                cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                                dwFlags: TME_LEAVE,
+                                hwndTrack: hwnd,
+                                ..Default::default()
+                            };
+                            let _ = TrackMouseEvent(&mut tracking);
+                        }
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                    }
+                }
+            }
+        }
+        WM_NCDESTROY => unsafe {
+            let _ = RemoveWindowSubclass(hwnd, Some(reset_defaults_subclass), id);
+        },
+        _ => {}
+    }
+    unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
+}
+
 pub fn draw_settings_button(item: &DRAWITEMSTRUCT, dark_mode: bool, hovered: bool, font: Option<HFONT>) {
     let pressed = item.itemState.0 & ODS_SELECTED.0 != 0;
     let background = if dark_mode {
@@ -893,16 +1013,21 @@ pub fn draw_settings_button(item: &DRAWITEMSTRUCT, dark_mode: bool, hovered: boo
     } else {
         COLORREF(0x00F0F0F0)
     };
+    unsafe {
+        let background_brush = CreateSolidBrush(background);
+        let _ = FillRect(item.hDC, &item.rcItem, background_brush);
+        let _ = DeleteObject(HGDIOBJ(background_brush.0));
+    }
+    draw_button_text(item, dark_mode, font);
+}
+
+fn draw_button_text(item: &DRAWITEMSTRUCT, dark_mode: bool, font: Option<HFONT>) {
     let foreground = if dark_mode {
         COLORREF(0x00FAFAFA)
     } else {
         COLORREF(0x00202020)
     };
     unsafe {
-        let background_brush = CreateSolidBrush(background);
-        let _ = FillRect(item.hDC, &item.rcItem, background_brush);
-        let _ = DeleteObject(HGDIOBJ(background_brush.0));
-
         let _ = SetTextColor(item.hDC, foreground);
         let _ = SetBkMode(item.hDC, TRANSPARENT);
         let old_font = font.map(|font| SelectObject(item.hDC, HGDIOBJ(font.0)));
@@ -977,6 +1102,28 @@ fn restore_startup_radio(state: &SettingsState) {
         if state.config.launch_at_startup { "yes" } else { "no" },
         &["yes", "no"],
     );
+}
+
+fn reset_defaults_text(language: crate::i18n::Language) -> &'static str {
+    match language {
+        crate::i18n::Language::Chinese => "重置为默认值",
+        crate::i18n::Language::English => "Reset to defaults",
+    }
+}
+
+fn reset_to_defaults(hwnd: HWND, previous: Config, save: impl FnOnce(&Config) -> Result<()>) -> Result<()> {
+    let defaults = Config {
+        launch_at_startup: previous.launch_at_startup,
+        ..Config::default()
+    };
+    save(&defaults)?;
+    let state = state_mut(hwnd).ok_or_else(Error::from_win32)?;
+    state.config = defaults.clone();
+    populate_config_controls(state);
+    update_settings_panel_language(hwnd, defaults.language());
+    refresh_settings_panel_theme(hwnd, &defaults);
+    update_settings_panel_font(hwnd, unsafe { GetDpiForWindow(hwnd) }.max(96));
+    Ok(())
 }
 
 fn apply_startup_preference(
@@ -1169,6 +1316,101 @@ mod tests {
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 
     #[test]
+    fn reset_defaults_preserves_startup_and_preserves_panel_on_save_failure() -> Result<()> {
+        use windows::Win32::Foundation::ERROR_ACCESS_DENIED;
+        let instance: HINSTANCE = unsafe { GetModuleHandleW(None)? }.into();
+        let parent = unsafe {
+            CreateWindowExW(
+                Default::default(),
+                w!("STATIC"),
+                w!(""),
+                Default::default(),
+                0,
+                0,
+                800,
+                533,
+                None,
+                None,
+                Some(instance),
+                None,
+            )?
+        };
+        for launch_at_startup in [false, true] {
+            let previous = Config {
+                period: 90,
+                character: "dog".into(),
+                language: "en".into(),
+                theme: "dark".into(),
+                tray_when_close: false,
+                auto_hide_on_start: false,
+                launch_at_startup,
+            };
+            let expected = Config {
+                launch_at_startup,
+                ..Config::default()
+            };
+            let panel = create_settings_panel(parent, instance, previous.clone(), None)?;
+            set_window_text(state_mut(panel).unwrap().period, "37");
+            let result = reset_to_defaults(panel, previous.clone(), |config| {
+                assert_eq!(config, &expected);
+                Err(Error::from_hresult(ERROR_ACCESS_DENIED.to_hresult()))
+            });
+            assert!(result.is_err());
+            let state = state_mut(panel).unwrap();
+            assert_eq!(state.config, previous);
+            assert_eq!(get_window_text(state.period), "37");
+            assert!(state.period_changed);
+            assert_eq!(read_config_without_period(state, previous.clone()), previous);
+            for _ in 0..2 {
+                let mut saved = None;
+                let previous = state_mut(panel).unwrap().config.clone();
+                reset_to_defaults(panel, previous, |config| {
+                    saved = Some(config.clone());
+                    Ok(())
+                })?;
+                assert_eq!(saved, Some(expected.clone()));
+                let state = state_mut(panel).unwrap();
+                assert_eq!(state.config, expected);
+                assert_eq!(get_window_text(state.period), "20");
+                assert!(!state.period_changed);
+                assert_eq!(read_config(state, expected.clone()), expected);
+                assert_eq!(is_checked(state.launch_at_startup[0]), launch_at_startup);
+                assert_eq!(is_checked(state.launch_at_startup[1]), !launch_at_startup);
+            }
+            update_settings_panel_language(panel, crate::i18n::Language::Chinese);
+            assert_eq!(
+                get_window_text(state_mut(panel).unwrap().reset_defaults),
+                "重置为默认值"
+            );
+            update_settings_panel_language(panel, crate::i18n::Language::English);
+            assert_eq!(
+                get_window_text(state_mut(panel).unwrap().reset_defaults),
+                "Reset to defaults"
+            );
+            let button = state_mut(panel).unwrap().reset_defaults;
+            assert!(!state_mut(panel).unwrap().reset_defaults_hovered);
+            unsafe {
+                SendMessageW(button, WM_MOUSEMOVE, None, None);
+                assert!(state_mut(panel).unwrap().reset_defaults_hovered);
+                SendMessageW(button, WM_SETCURSOR, None, None);
+                assert_eq!(
+                    windows::Win32::UI::WindowsAndMessaging::GetCursor(),
+                    LoadCursorW(None, IDC_HAND)?
+                );
+                SendMessageW(button, WM_MOUSELEAVE, None, None);
+                assert!(!state_mut(panel).unwrap().reset_defaults_hovered);
+            }
+            unsafe {
+                DestroyWindow(panel)?;
+            }
+        }
+        unsafe {
+            DestroyWindow(parent)?;
+        }
+        Ok(())
+    }
+
+    #[test]
     fn startup_changes_restore_radios_on_failure_and_preserve_unsaved_minutes() -> Result<()> {
         use windows::Win32::Foundation::ERROR_ACCESS_DENIED;
         let instance: HINSTANCE = unsafe { GetModuleHandleW(None)? }.into();
@@ -1300,6 +1542,14 @@ mod tests {
             }
         }
         assert!(visited.contains(&back), "Tab must include the footer Back button");
+        assert!(
+            visited.contains(&state_mut(panel).unwrap().reset_defaults),
+            "Tab must include reset to defaults"
+        );
+        assert_eq!(
+            unsafe { GetNextDlgTabItem(parent, Some(state_mut(panel).unwrap().reset_defaults), false)? },
+            back
+        );
         assert_eq!(visited.last(), Some(&minutes), "Tab must loop back to minutes");
         assert_eq!(unsafe { GetNextDlgTabItem(parent, Some(minutes), true)? }, back);
         unsafe { SetFocus(Some(back))? };
@@ -1333,6 +1583,7 @@ mod tests {
             )?
         };
         let drops = STATE_DROPS.with(|count| count.get());
+        let back = create_settings_button(parent, instance, "返回", None);
         for period in [30, 90, 1200] {
             let initial = Config {
                 period,
@@ -1342,24 +1593,40 @@ mod tests {
             };
             let panel = create_settings_panel(parent, instance, initial.clone(), None)?;
             for dpi in [96, 144, 192] {
-                move_control(panel, 0, 0, 800 * dpi as i32 / 96, 469 * dpi as i32 / 96);
+                move_control(panel, 0, 0, 800 * dpi as i32 / 96, 533 * dpi as i32 / 96);
+                move_control(
+                    back,
+                    (800 - 12 - 96) * dpi as i32 / 96,
+                    (533 - 64) * dpi as i32 / 96,
+                    96 * dpi as i32 / 96,
+                    32 * dpi as i32 / 96,
+                );
                 layout_settings_panel(panel, dpi);
                 let state = state_mut(panel).unwrap();
                 let mut panel_rect = RECT::default();
                 let mut previous_row = RECT::default();
                 let mut auto_hide_rect = RECT::default();
                 let mut startup_rect = RECT::default();
+                let mut reset_rect = RECT::default();
+                let mut back_rect = RECT::default();
                 unsafe {
                     use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
                     GetWindowRect(panel, &mut panel_rect)?;
                     GetWindowRect(state.close_behavior[0], &mut previous_row)?;
                     GetWindowRect(state.auto_hide[0], &mut auto_hide_rect)?;
                     GetWindowRect(state.launch_at_startup[0], &mut startup_rect)?;
+                    GetWindowRect(state.reset_defaults, &mut reset_rect)?;
+                    GetWindowRect(back, &mut back_rect)?;
                 }
                 assert!(auto_hide_rect.top >= previous_row.bottom);
                 assert!(auto_hide_rect.bottom <= panel_rect.bottom);
                 assert!(startup_rect.top >= auto_hide_rect.bottom);
                 assert!(startup_rect.bottom <= panel_rect.bottom);
+                assert!(reset_rect.top >= startup_rect.bottom);
+                assert!(reset_rect.bottom <= panel_rect.bottom);
+                assert_eq!(reset_rect.top, back_rect.top);
+                assert_eq!(reset_rect.bottom, back_rect.bottom);
+                assert_eq!(back_rect.left - reset_rect.right, 12 * dpi as i32 / 96);
             }
             update_settings_panel_language(panel, crate::i18n::Language::English);
             assert_eq!(get_window_text(state_mut(panel).unwrap().auto_hide[0]), "Yes");

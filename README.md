@@ -105,6 +105,11 @@ input unchanged preserves the original seconds. The countdown always displays
 the exact seconds. Changing the interval replaces the remaining countdown;
 changing other settings preserves it.
 
+Click **Reset to defaults** to the left of **Back** to immediately save and
+apply default settings, including a 20-minute interval, while preserving the
+current **Launch at startup** preference and its registry entry. The Settings
+panel stays open. If saving fails, the panel keeps its existing values.
+
 The UTF-8 configuration file is `%APPDATA%\yinhaibo\stand-awhile\config.json`.
 It is created on first launch. For manual changes, close the application, edit
 the file, then restart. Omitted or null fields use the defaults below.
