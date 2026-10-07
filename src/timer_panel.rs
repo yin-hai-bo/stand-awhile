@@ -133,6 +133,7 @@ fn draw_timer_hint(hwnd: HWND, hdc: HDC) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use windows::Win32::{
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
@@ -141,7 +142,12 @@ mod tests {
         },
     };
 
+    static LAST_COMMAND: AtomicUsize = AtomicUsize::new(0);
+
     unsafe extern "system" fn parent_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        if msg == WM_COMMAND {
+            LAST_COMMAND.store(wparam.0 & 0xFFFF, Ordering::Relaxed);
+        }
         unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
     }
 
@@ -216,9 +222,10 @@ mod tests {
                 };
                 use crate::window_proc::{create_auto_hide_checkbox, process_dialog_message, set_main_tab_order};
                 use windows::Win32::UI::{
-                    Input::KeyboardAndMouse::{GetFocus, SetFocus, VK_RETURN, VK_SPACE, VK_TAB},
+                    Input::KeyboardAndMouse::{GetFocus, SetFocus, VK_ESCAPE, VK_RETURN, VK_SPACE, VK_TAB},
                     WindowsAndMessaging::{
-                        DispatchMessageW, GetNextDlgTabItem, MSG, PM_REMOVE, PeekMessageW, WM_KEYDOWN, WM_KEYUP,
+                        DispatchMessageW, GetNextDlgTabItem, HMENU, IDCANCEL, IDOK, MSG, PM_REMOVE, PeekMessageW,
+                        WM_KEYDOWN, WM_KEYUP, WS_TABSTOP,
                     },
                 };
                 register_button_class(instance).unwrap();
@@ -281,6 +288,58 @@ mod tests {
                 SendMessageW(buttons[1], WM_KEYUP, Some(WPARAM(VK_RETURN.0 as usize)), None);
                 let mut command = MSG::default();
                 assert!(!PeekMessageW(&mut command, Some(panel), WM_COMMAND, WM_COMMAND, PM_REMOVE).as_bool());
+
+                let edit = CreateWindowExW(
+                    Default::default(),
+                    w!("EDIT"),
+                    w!("20"),
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                    0,
+                    0,
+                    100,
+                    24,
+                    Some(parent),
+                    Some(HMENU(10usize as _)),
+                    Some(instance),
+                    None,
+                )
+                .unwrap();
+                for focus in [parent, edit] {
+                    SetFocus(Some(focus)).unwrap();
+                    for (key, id) in [(VK_ESCAPE, IDCANCEL), (VK_RETURN, IDOK)] {
+                        LAST_COMMAND.store(0, Ordering::Relaxed);
+                        let message = MSG {
+                            hwnd: focus,
+                            message: WM_KEYDOWN,
+                            wParam: WPARAM(key.0 as usize),
+                            ..Default::default()
+                        };
+                        assert!(process_dialog_message(parent, &message));
+                        let command = LAST_COMMAND.load(Ordering::Relaxed);
+                        assert_eq!(command, id.0 as usize);
+                        assert_ne!(command, crate::settings::SETTINGS_BUTTON_ID);
+                        assert_ne!(command, crate::settings::ABOUT_BUTTON_ID);
+                    }
+                }
+                for (button, id) in [
+                    (about, crate::settings::ABOUT_BUTTON_ID),
+                    (settings, crate::settings::SETTINGS_BUTTON_ID),
+                ] {
+                    SetFocus(Some(button)).unwrap();
+                    LAST_COMMAND.store(0, Ordering::Relaxed);
+                    for message_id in [WM_KEYDOWN, WM_KEYUP] {
+                        let message = MSG {
+                            hwnd: button,
+                            message: message_id,
+                            wParam: WPARAM(VK_SPACE.0 as usize),
+                            ..Default::default()
+                        };
+                        if !process_dialog_message(parent, &message) {
+                            DispatchMessageW(&message);
+                        }
+                    }
+                    assert_eq!(LAST_COMMAND.load(Ordering::Relaxed), id);
+                }
             }
             let previous_cursor = GetCursor();
             let mut actual_cursors = Vec::new();
