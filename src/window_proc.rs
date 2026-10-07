@@ -112,7 +112,11 @@ fn apply_timer_period(hwnd: HWND, seconds: u32) {
 }
 
 pub fn remaining_seconds() -> u32 {
-    REMAINING_SECONDS.load(Ordering::Relaxed)
+    if *TIMER_STATE.lock().expect("timer state mutex poisoned") == TimerState::Finished {
+        initial_remaining_seconds()
+    } else {
+        REMAINING_SECONDS.load(Ordering::Relaxed)
+    }
 }
 
 pub fn attach_window_state(hwnd: HWND, state: WindowState) {
@@ -164,10 +168,11 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
 
                 let _ = sync_control_button_enabled(hwnd);
 
+                let displayed_remaining = remaining_seconds();
                 unsafe {
                     invalidate_countdown(hwnd, previous_remaining);
-                    if current_remaining != previous_remaining {
-                        invalidate_countdown(hwnd, current_remaining);
+                    if displayed_remaining != previous_remaining {
+                        invalidate_countdown(hwnd, displayed_remaining);
                     }
                 }
                 return LRESULT(0);
@@ -813,6 +818,20 @@ mod tests {
     static TIMER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
+    fn finished_countdown_displays_configured_duration() {
+        let _guard = TIMER_TEST_LOCK.lock().unwrap();
+        for period in [1200, 600, 3661] {
+            set_initial_remaining_seconds(period);
+            REMAINING_SECONDS.store(0, Ordering::Relaxed);
+            *TIMER_STATE.lock().unwrap() = TimerState::Finished;
+            let displayed = remaining_seconds();
+            set_initial_remaining_seconds(DEFAULT_INITIAL_REMAINING_SECONDS);
+            *TIMER_STATE.lock().unwrap() = TimerState::NotStarted;
+            assert_eq!(displayed, period);
+        }
+    }
+
+    #[test]
     fn first_pet_or_menu_start_hides_main_window_only_once_per_app_session() {
         for first_source in [StartSource::Pet, StartSource::Menu] {
             let mut started = false;
@@ -846,7 +865,11 @@ mod tests {
             *TIMER_STATE.lock().unwrap() = state;
             REMAINING_SECONDS.store(remaining, Ordering::Relaxed);
             apply_timer_period(HWND::default(), 1200);
-            assert_eq!(remaining_seconds(), remaining);
+            assert_eq!(REMAINING_SECONDS.load(Ordering::Relaxed), remaining);
+            assert_eq!(
+                remaining_seconds(),
+                if state == TimerState::Finished { 1200 } else { remaining }
+            );
             assert_eq!(*TIMER_STATE.lock().unwrap(), state);
         }
         apply_timer_period(HWND::default(), 600);
