@@ -4,12 +4,12 @@ use windows::{
     Win32::{
         Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::Gdi::{
-            CreateFontIndirectW, CreateSolidBrush, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW,
-            FillRect, GetObjectW, HBRUSH, HDC, HFONT, HGDIOBJ, InvalidateRect, LOGFONTW, SelectObject, SetBkColor,
-            SetBkMode, SetTextColor, TRANSPARENT,
+            CreateFontIndirectW, CreateSolidBrush, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawFocusRect,
+            DrawTextW, FillRect, GetObjectW, HBRUSH, HDC, HFONT, HGDIOBJ, InvalidateRect, LOGFONTW, SelectObject,
+            SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
         },
         UI::{
-            Controls::{BST_CHECKED, DRAWITEMSTRUCT, ODS_SELECTED},
+            Controls::{BST_CHECKED, DRAWITEMSTRUCT, ODS_FOCUS, ODS_NOFOCUSRECT, ODS_SELECTED},
             HiDpi::GetDpiForWindow,
             Input::KeyboardAndMouse::SetFocus,
             WindowsAndMessaging::{
@@ -155,6 +155,12 @@ pub fn resize_settings_panel(hwnd: HWND, parent: HWND) -> Result<()> {
     }
     layout_settings_panel(hwnd, dpi);
     Ok(())
+}
+
+pub fn focus_settings_panel(hwnd: HWND) {
+    unsafe {
+        let _ = SetFocus(Some(hwnd));
+    }
 }
 
 pub fn layout_settings_panel(hwnd: HWND, dpi: u32) {
@@ -843,6 +849,17 @@ pub fn draw_settings_button(item: &DRAWITEMSTRUCT, dark_mode: bool, hovered: boo
         if let Some(old_font) = old_font {
             let _ = SelectObject(item.hDC, old_font);
         }
+        if item.itemState.0 & ODS_FOCUS.0 != 0 && item.itemState.0 & ODS_NOFOCUSRECT.0 == 0 {
+            let dpi = GetDpiForWindow(item.hwndItem).max(96);
+            let inset = 3 * dpi as i32 / 96;
+            let focus_rect = RECT {
+                left: item.rcItem.left + inset,
+                top: item.rcItem.top + inset,
+                right: item.rcItem.right - inset,
+                bottom: item.rcItem.bottom - inset,
+            };
+            let _ = DrawFocusRect(item.hDC, &focus_rect);
+        }
     }
 }
 
@@ -1058,6 +1075,63 @@ fn wide(value: &str) -> Vec<u16> {
 mod tests {
     use super::*;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+
+    #[test]
+    fn settings_focus_starts_in_minutes_and_tabs_through_back_button() -> Result<()> {
+        use windows::Win32::UI::{
+            Input::KeyboardAndMouse::{GetFocus, VK_TAB},
+            WindowsAndMessaging::{GetNextDlgTabItem, IsDialogMessageW, MSG, WM_KEYDOWN},
+        };
+        let instance: HINSTANCE = unsafe { GetModuleHandleW(None)? }.into();
+        let parent = unsafe {
+            CreateWindowExW(
+                Default::default(),
+                w!("STATIC"),
+                w!(""),
+                Default::default(),
+                0,
+                0,
+                800,
+                533,
+                None,
+                None,
+                Some(instance),
+                None,
+            )?
+        };
+        let back = create_settings_button(parent, instance, "返回", None);
+        let panel = create_settings_panel(parent, instance, Config::default(), None)?;
+        let minutes = state_mut(panel).unwrap().period;
+        focus_settings_panel(panel);
+        assert_eq!(unsafe { GetFocus() }, minutes);
+        let mut visited = Vec::new();
+        for _ in 0..32 {
+            let message = MSG {
+                hwnd: unsafe { GetFocus() },
+                message: WM_KEYDOWN,
+                wParam: WPARAM(VK_TAB.0 as usize),
+                ..Default::default()
+            };
+            assert!(unsafe { IsDialogMessageW(parent, &message).as_bool() });
+            let focused = unsafe { GetFocus() };
+            visited.push(focused);
+            if focused == minutes {
+                break;
+            }
+        }
+        assert!(visited.contains(&back), "Tab must include the footer Back button");
+        assert_eq!(visited.last(), Some(&minutes), "Tab must loop back to minutes");
+        assert_eq!(unsafe { GetNextDlgTabItem(parent, Some(minutes), true)? }, back);
+        unsafe { SetFocus(Some(back))? };
+        focus_settings_panel(panel);
+        assert_eq!(
+            unsafe { GetFocus() },
+            minutes,
+            "reopening must restore the initial focus"
+        );
+        unsafe { DestroyWindow(parent)? };
+        Ok(())
+    }
 
     #[test]
     fn settings_preserve_period_until_saved_and_release_state_on_close() -> Result<()> {

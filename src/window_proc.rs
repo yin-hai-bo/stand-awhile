@@ -11,9 +11,9 @@ use crate::pet_window::{
 };
 use crate::settings::{
     ABOUT_BUTTON_ID, SETTINGS_APPLIED_ID, SETTINGS_BUTTON_ID, SETTINGS_CHANGED_ID, SETTINGS_CLOSED_ID,
-    create_settings_panel, draw_settings_button, refresh_settings_panel_theme, resize_settings_panel,
-    save_settings_panel, set_settings_button_text, update_settings_button_font, update_settings_panel_auto_hide,
-    update_settings_panel_font, update_settings_panel_language,
+    create_settings_panel, draw_settings_button, focus_settings_panel, refresh_settings_panel_theme,
+    resize_settings_panel, save_settings_panel, set_settings_button_text, update_settings_button_font,
+    update_settings_panel_auto_hide, update_settings_panel_font, update_settings_panel_language,
 };
 use crate::timer_panel::resize_timer_panel;
 use crate::ui::font::common_gui_font;
@@ -199,7 +199,7 @@ pub fn process_settings_message(hwnd: HWND, message: &MSG) -> bool {
         return false;
     };
     if unsafe { IsWindowVisible(state.settings_panel).as_bool() } {
-        unsafe { IsDialogMessageW(state.settings_panel, message).as_bool() }
+        unsafe { IsDialogMessageW(hwnd, message).as_bool() }
     } else {
         false
     }
@@ -773,6 +773,7 @@ fn open_settings(hwnd: HWND) {
         unsafe {
             let _ = ShowWindow(state.settings_panel, SW_SHOW);
         }
+        focus_settings_panel(state.settings_panel);
         return;
     }
     let Ok(config) = Config::load() else {
@@ -797,6 +798,7 @@ fn open_settings(hwnd: HWND) {
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
                 );
             }
+            focus_settings_panel(panel);
         }
     }
 }
