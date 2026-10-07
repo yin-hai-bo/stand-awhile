@@ -91,7 +91,9 @@ impl SpeechBubbleWindow {
             return Ok(());
         }
 
-        self.set_position(pet_position, pet_size)?;
+        state.pet_position = pet_position;
+        state.pet_size = pet_size;
+        layout_bubble(self.hwnd, state)?;
 
         if text_changed {
             unsafe {
