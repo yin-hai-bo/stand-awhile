@@ -73,6 +73,8 @@ window; the countdown and any visible Pet reminder continue.
 Open **Settings** from the main window, tray menu, or Pet menu. Character,
 language, theme, close behavior, and auto-hide changes are saved and applied immediately.
 The auto-hide Yes/No options share the main window checkbox's preference.
+**Launch at startup** also has Yes/No options, defaulting to No. This preference
+is saved only; automatic startup is not implemented yet.
 Settings accepts whole minutes (at least 1), converted to seconds when you click
 **Back**. Existing intervals are displayed rounded up to minutes; leaving the
 input unchanged preserves the original seconds. The countdown always displays
@@ -90,6 +92,7 @@ the file, then restart. Omitted or null fields use the defaults below.
 | `language` | `"auto"` | `"auto"`, `"zh"`, or `"en"`; Auto follows the Windows UI language, using Chinese for Chinese locales and English otherwise |
 | `theme` | `"system"` | `"system"`, `"light"`, or `"dark"` |
 | `tray_when_close` | `true` | `true` hides the main window on close; `false` exits |
+| `launch_at_startup` | `false` | Stored startup preference; no startup registration is performed yet |
 
 Runtime information is stored separately in the UTF-8 file
 `%LOCALAPPDATA%\yinhaibo\stand-awhile\state.json`.

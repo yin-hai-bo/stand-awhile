@@ -48,13 +48,15 @@ const CLOSE_EXIT_ID: usize = 19;
 const CLOSE_TRAY_ID: usize = 20;
 const AUTO_HIDE_YES_ID: usize = 21;
 const AUTO_HIDE_NO_ID: usize = 22;
-const SETTINGS_TITLE_COUNT: usize = 6;
+const STARTUP_YES_ID: usize = 23;
+const STARTUP_NO_ID: usize = 24;
+const SETTINGS_TITLE_COUNT: usize = 7;
 
 const BASE_GRID_LEFT: i32 = 72;
 const BASE_TITLE_WIDTH: i32 = 196;
 const BASE_COLUMN_GAP: i32 = 12;
 const BASE_CONTROL_WIDTH: i32 = 280;
-const BASE_GRID_TOP: i32 = 80;
+const BASE_GRID_TOP: i32 = 56;
 const BASE_ROW_HEIGHT: i32 = 32;
 const BASE_ROW_GAP: i32 = 16;
 
@@ -70,6 +72,7 @@ struct SettingsState {
     theme: [HWND; 3],
     close_behavior: [HWND; 2],
     auto_hide: [HWND; 2],
+    launch_at_startup: [HWND; 2],
     font: Option<HFONT>,
     title_font: Option<HFONT>,
     font_controls: Vec<HWND>,
@@ -112,6 +115,7 @@ pub fn create_settings_panel(parent: HWND, instance: HINSTANCE, config: Config, 
         theme: [HWND::default(); 3],
         close_behavior: [HWND::default(); 2],
         auto_hide: [HWND::default(); 2],
+        launch_at_startup: [HWND::default(); 2],
         font,
         title_font: None,
         font_controls: Vec::new(),
@@ -183,6 +187,7 @@ pub fn layout_settings_panel(hwnd: HWND, dpi: u32) {
         state.font_controls[3],
         state.font_controls[4],
         state.font_controls[5],
+        state.font_controls[6],
     ];
     for (index, label) in labels.into_iter().enumerate() {
         let y = grid_top + index as i32 * row_step;
@@ -227,6 +232,14 @@ pub fn layout_settings_panel(hwnd: HWND, dpi: u32) {
         &state.auto_hide,
         control_x,
         grid_top + 5 * row_step,
+        control_width,
+        row_height,
+        dpi,
+    );
+    layout_radio_group(
+        &state.launch_at_startup,
+        control_x,
+        grid_top + 6 * row_step,
         control_width,
         row_height,
         dpi,
@@ -383,7 +396,7 @@ unsafe extern "system" fn settings_window_proc(hwnd: HWND, msg: u32, wparam: WPA
                 match id {
                     CHARACTER_CAT_ID | CHARACTER_DOG_ID | LANGUAGE_AUTO_ID | LANGUAGE_ZH_ID | LANGUAGE_EN_ID
                     | THEME_SYSTEM_ID | THEME_LIGHT_ID | THEME_DARK_ID | CLOSE_EXIT_ID | CLOSE_TRAY_ID
-                    | AUTO_HIDE_YES_ID | AUTO_HIDE_NO_ID => {
+                    | AUTO_HIDE_YES_ID | AUTO_HIDE_NO_ID | STARTUP_YES_ID | STARTUP_NO_ID => {
                         if let Some(state) = state_mut(hwnd) {
                             if let Ok(config) = Config::load().map(|config| read_config_without_period(state, config)) {
                                 if config.save().is_ok() {
@@ -551,6 +564,22 @@ fn create_controls(hwnd: HWND, state: &mut SettingsState) {
             false,
         ),
     ];
+    state.launch_at_startup = [
+        create_radio(
+            hwnd,
+            state.instance,
+            STARTUP_YES_ID,
+            if chinese { "是" } else { "Yes" },
+            true,
+        ),
+        create_radio(
+            hwnd,
+            state.instance,
+            STARTUP_NO_ID,
+            if chinese { "否" } else { "No" },
+            false,
+        ),
+    ];
     let label = create_static(
         hwnd,
         state.instance,
@@ -599,12 +628,25 @@ fn create_controls(hwnd: HWND, state: &mut SettingsState) {
         324,
     );
     font_controls.push(label);
+    let label = create_static(
+        hwnd,
+        state.instance,
+        if chinese {
+            "开机自启动："
+        } else {
+            "Launch at startup:"
+        },
+        72,
+        372,
+    );
+    font_controls.push(label);
     font_controls.push(state.period);
     font_controls.extend(state.character);
     font_controls.extend(state.language);
     font_controls.extend(state.theme);
     font_controls.extend(state.close_behavior);
     font_controls.extend(state.auto_hide);
+    font_controls.extend(state.launch_at_startup);
     state.font_controls = font_controls;
     set_radio_group(&state.character, &state.config.character, &["cat", "dog"]);
     set_radio_group(&state.language, &state.config.language, &["auto", "zh", "en"]);
@@ -620,6 +662,11 @@ fn create_controls(hwnd: HWND, state: &mut SettingsState) {
         &["yes", "no"],
     );
     replace_title_font(state);
+    set_radio_group(
+        &state.launch_at_startup,
+        if state.config.launch_at_startup { "yes" } else { "no" },
+        &["yes", "no"],
+    );
     for control in &state.font_controls {
         set_font(*control, state.font);
     }
@@ -667,6 +714,11 @@ pub fn update_settings_panel_language(hwnd: HWND, language: crate::i18n::Languag
         } else {
             "Auto-hide on start:"
         },
+        if chinese {
+            "开机自启动："
+        } else {
+            "Launch at startup:"
+        },
     ];
     for (control, text) in state.font_controls[..SETTINGS_TITLE_COUNT].iter().zip(titles) {
         set_control_text(*control, text);
@@ -701,6 +753,9 @@ pub fn update_settings_panel_language(hwnd: HWND, language: crate::i18n::Languag
     }
     let auto_hide_options = if chinese { ["是", "否"] } else { ["Yes", "No"] };
     for (control, text) in state.auto_hide.iter().zip(auto_hide_options) {
+        set_control_text(*control, text);
+    }
+    for (control, text) in state.launch_at_startup.iter().zip(auto_hide_options) {
         set_control_text(*control, text);
     }
     set_window_text(hwnd, if chinese { "设置" } else { "Settings" });
@@ -911,6 +966,7 @@ fn read_config_without_period(state: &SettingsState, mut config: Config) -> Conf
     config.theme = radio_text(&state.theme, &["system", "light", "dark"]);
     config.tray_when_close = is_checked(state.close_behavior[1]);
     config.auto_hide_on_start = is_checked(state.auto_hide[0]);
+    config.launch_at_startup = is_checked(state.launch_at_startup[0]);
     config
 }
 
@@ -1157,6 +1213,7 @@ mod tests {
             let initial = Config {
                 period,
                 auto_hide_on_start: period != 90,
+                launch_at_startup: period == 90,
                 ..Config::default()
             };
             let panel = create_settings_panel(parent, instance, initial.clone(), None)?;
@@ -1167,20 +1224,37 @@ mod tests {
                 let mut panel_rect = RECT::default();
                 let mut previous_row = RECT::default();
                 let mut auto_hide_rect = RECT::default();
+                let mut startup_rect = RECT::default();
                 unsafe {
                     use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
                     GetWindowRect(panel, &mut panel_rect)?;
                     GetWindowRect(state.close_behavior[0], &mut previous_row)?;
                     GetWindowRect(state.auto_hide[0], &mut auto_hide_rect)?;
+                    GetWindowRect(state.launch_at_startup[0], &mut startup_rect)?;
                 }
                 assert!(auto_hide_rect.top >= previous_row.bottom);
                 assert!(auto_hide_rect.bottom <= panel_rect.bottom);
+                assert!(startup_rect.top >= auto_hide_rect.bottom);
+                assert!(startup_rect.bottom <= panel_rect.bottom);
             }
             update_settings_panel_language(panel, crate::i18n::Language::English);
             assert_eq!(get_window_text(state_mut(panel).unwrap().auto_hide[0]), "Yes");
+            assert_eq!(get_window_text(state_mut(panel).unwrap().launch_at_startup[0]), "Yes");
             update_settings_panel_language(panel, crate::i18n::Language::Chinese);
             assert_eq!(get_window_text(state_mut(panel).unwrap().auto_hide[1]), "否");
+            assert_eq!(get_window_text(state_mut(panel).unwrap().launch_at_startup[1]), "否");
             let state = state_mut(panel).unwrap();
+            assert_eq!(is_checked(state.launch_at_startup[0]), initial.launch_at_startup);
+            assert_eq!(is_checked(state.launch_at_startup[1]), !initial.launch_at_startup);
+            assert_eq!(
+                read_config_without_period(state, initial.clone()).launch_at_startup,
+                initial.launch_at_startup
+            );
+            set_radio_group(
+                &state.launch_at_startup,
+                if initial.launch_at_startup { "no" } else { "yes" },
+                &["yes", "no"],
+            );
             assert_eq!(is_checked(state.auto_hide[0]), initial.auto_hide_on_start);
             assert_eq!(is_checked(state.auto_hide[1]), !initial.auto_hide_on_start);
             assert_eq!(
@@ -1203,9 +1277,11 @@ mod tests {
             let changed = read_config_without_period(state, latest.clone());
             assert_eq!(changed.period, latest.period);
             assert!(!changed.auto_hide_on_start);
+            assert_eq!(changed.launch_at_startup, !latest.launch_at_startup);
             let saved = read_config(state, latest.clone());
             assert_eq!(saved.period, 90 * 60);
             assert!(!saved.auto_hide_on_start);
+            assert_eq!(saved.launch_at_startup, !latest.launch_at_startup);
             unsafe { DestroyWindow(panel)? };
         }
         unsafe { DestroyWindow(parent)? };

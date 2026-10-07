@@ -20,6 +20,7 @@ pub struct Config {
     pub period: u32,
     pub tray_when_close: bool,
     pub auto_hide_on_start: bool,
+    pub launch_at_startup: bool,
     pub language: String,
     pub theme: String,
     pub character: String,
@@ -31,6 +32,7 @@ impl Default for Config {
             period: DEFAULT_PERIOD_SECONDS,
             tray_when_close: DEFAULT_TRAY_WHEN_CLOSE,
             auto_hide_on_start: true,
+            launch_at_startup: false,
             language: DEFAULT_LANGUAGE.to_owned(),
             theme: DEFAULT_THEME.to_owned(),
             character: DEFAULT_CHARACTER.to_owned(),
@@ -43,6 +45,7 @@ struct ConfigFile {
     period: Option<u32>,
     tray_when_close: Option<bool>,
     auto_hide_on_start: Option<bool>,
+    launch_at_startup: Option<bool>,
     language: Option<String>,
     theme: Option<String>,
     character: Option<String>,
@@ -63,6 +66,7 @@ impl Config {
             period: file.period.unwrap_or(DEFAULT_PERIOD_SECONDS),
             tray_when_close: file.tray_when_close.unwrap_or(DEFAULT_TRAY_WHEN_CLOSE),
             auto_hide_on_start: file.auto_hide_on_start.unwrap_or(true),
+            launch_at_startup: file.launch_at_startup.unwrap_or(false),
             language: file.language.unwrap_or_else(|| DEFAULT_LANGUAGE.to_owned()),
             theme: file.theme.unwrap_or_else(|| DEFAULT_THEME.to_owned()),
             character: file.character.unwrap_or_else(|| DEFAULT_CHARACTER.to_owned()),
@@ -87,6 +91,7 @@ impl Config {
             period: Some(self.period),
             tray_when_close: Some(self.tray_when_close),
             auto_hide_on_start: Some(self.auto_hide_on_start),
+            launch_at_startup: Some(self.launch_at_startup),
             language: Some(self.language.clone()),
             theme: Some(self.theme.clone()),
             character: Some(self.character.clone()),
@@ -121,6 +126,7 @@ mod tests {
         assert_eq!(config.period, 20 * 60);
         assert!(config.tray_when_close);
         assert!(config.auto_hide_on_start);
+        assert!(!config.launch_at_startup);
         assert_eq!(config.language, "auto");
         assert_eq!(config.theme, "system");
         assert_eq!(config.character, "cat");
@@ -155,6 +161,20 @@ mod tests {
                 .unwrap(),
             Config::default()
         );
+    }
+
+    #[test]
+    fn startup_preference_loads_and_round_trips() {
+        assert!(
+            !Config::from_json(r#"{"launch_at_startup":null}"#)
+                .unwrap()
+                .launch_at_startup
+        );
+        for enabled in [false, true] {
+            let config = Config::from_json(&format!(r#"{{"launch_at_startup":{enabled}}}"#)).unwrap();
+            assert_eq!(config.launch_at_startup, enabled);
+            assert_eq!(Config::from_json(&config.to_json().unwrap()).unwrap(), config);
+        }
     }
 
     #[test]
