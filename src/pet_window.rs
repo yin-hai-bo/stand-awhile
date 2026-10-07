@@ -251,7 +251,7 @@ impl PetWindow {
             let _ = state.speech_bubble.set_language(language);
             state.start_menu_text = crate::tray_menu_start_text(language).to_owned();
             state.show_main_menu_text = crate::tray_menu_show_text(language).to_owned();
-            state.settings_menu_text = crate::settings_menu_text(language).to_owned();
+            state.settings_menu_text = crate::tray_menu_settings_text(language).to_owned();
             state.about_menu_text = crate::tray_menu_about_text(language).to_owned();
             state.exit_menu_text = crate::tray_menu_exit_text(language).to_owned();
         }

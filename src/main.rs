@@ -158,7 +158,7 @@ fn run() -> Result<()> {
         animations,
         language,
         app_state.pet_position,
-        settings_menu_text(language),
+        tray_menu_settings_text(language),
     )?;
     pet_window.set_language(language);
     let control_buttons = create_control_buttons(timer_panel, instance)?;
@@ -168,13 +168,13 @@ fn run() -> Result<()> {
         main_window_title(language),
         tray_menu_start_text(language),
         tray_menu_show_text(language),
-        settings_menu_text(language),
+        tray_menu_settings_text(language),
         tray_menu_about_text(language),
         tray_menu_exit_text(language),
     )?;
     let common_gui_font = common_gui_font(dpi, language == i18n::Language::Chinese);
     let settings_button = create_settings_button(hwnd, instance, settings_menu_text(language), common_gui_font);
-    let about_button = create_about_button(hwnd, instance, tray_menu_about_text(language), common_gui_font);
+    let about_button = create_about_button(hwnd, instance, about_button_text(language), common_gui_font);
     let auto_hide_checkbox =
         create_auto_hide_checkbox(hwnd, instance, language, common_gui_font, config.auto_hide_on_start)?;
     attach_window_state(
@@ -274,26 +274,40 @@ fn wide_null(value: &str) -> Vec<u16> {
 
 pub(crate) fn tray_menu_show_text(language: i18n::Language) -> &'static str {
     match language {
-        i18n::Language::Chinese => "显示主窗口",
-        i18n::Language::English => "Show main window",
+        i18n::Language::Chinese => "显示主窗口 (&M)",
+        i18n::Language::English => "Show &main window",
     }
 }
 
 pub(crate) fn tray_menu_start_text(language: i18n::Language) -> &'static str {
     match language {
-        i18n::Language::Chinese => "开始计时",
-        i18n::Language::English => "Start timer",
+        i18n::Language::Chinese => "开始计时 (&S)",
+        i18n::Language::English => "&Start Timer",
     }
 }
 
 pub(crate) fn tray_menu_exit_text(language: i18n::Language) -> &'static str {
     match language {
-        i18n::Language::Chinese => "退出",
-        i18n::Language::English => "Exit",
+        i18n::Language::Chinese => "退出 (&X)",
+        i18n::Language::English => "E&xit",
     }
 }
 
 pub(crate) fn tray_menu_about_text(language: i18n::Language) -> &'static str {
+    match language {
+        i18n::Language::Chinese => "关于 (&A)",
+        i18n::Language::English => "&About",
+    }
+}
+
+pub(crate) fn tray_menu_settings_text(language: i18n::Language) -> &'static str {
+    match language {
+        i18n::Language::Chinese => "设置 (&E)",
+        i18n::Language::English => "S&ettings",
+    }
+}
+
+pub(crate) fn about_button_text(language: i18n::Language) -> &'static str {
     match language {
         i18n::Language::Chinese => "关于",
         i18n::Language::English => "About",
@@ -323,4 +337,45 @@ fn load_icon_with_size(instance: HINSTANCE, width: i32, height: i32) -> Option<H
     let resource = PCWSTR(APP_ICON_RESOURCE_ID as *const u16);
     let handle = unsafe { LoadImageW(Some(instance), resource, IMAGE_ICON, width, height, LR_DEFAULTCOLOR).ok()? };
     Some(HICON(handle.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn localized_menu_access_keys_match_without_changing_footer_labels() {
+        for (language, expected) in [
+            (
+                i18n::Language::English,
+                ["&Start Timer", "Show &main window", "S&ettings", "&About", "E&xit"],
+            ),
+            (
+                i18n::Language::Chinese,
+                [
+                    "开始计时 (&S)",
+                    "显示主窗口 (&M)",
+                    "设置 (&E)",
+                    "关于 (&A)",
+                    "退出 (&X)",
+                ],
+            ),
+        ] {
+            let actual = [
+                tray_menu_start_text(language),
+                tray_menu_show_text(language),
+                tray_menu_settings_text(language),
+                tray_menu_about_text(language),
+                tray_menu_exit_text(language),
+            ];
+            assert_eq!(actual, expected);
+            for (text, key) in actual.into_iter().zip(['s', 'm', 'e', 'a', 'x']) {
+                let (_, marked) = text.split_once('&').unwrap();
+                assert_eq!(marked.chars().next().unwrap().to_ascii_lowercase(), key);
+                assert!(!marked.contains('&'));
+            }
+            assert!(!settings_menu_text(language).contains('&'));
+            assert!(!about_button_text(language).contains('&'));
+        }
+    }
 }

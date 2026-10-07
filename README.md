@@ -100,6 +100,10 @@ The timer buttons support Space and Enter; the footer buttons support Space.
 Opening Settings from either menu, or choosing **Show main window** from the
 tray or Pet menu, also restores a minimized main window.
 
+With either the Pet or tray context menu open, press **S** to start the timer,
+**M** to show the main window, **E** to open Settings, **A** to open About, or
+**X** to exit. These access keys are the same in Chinese and English.
+
 ### Settings and Configuration
 
 Open **Settings** from the main window, tray menu, or Pet menu. Character,

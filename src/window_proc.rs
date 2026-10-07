@@ -896,7 +896,7 @@ fn apply_saved_settings(hwnd: HWND) {
             ),
             crate::tray_menu_start_text(language),
             crate::tray_menu_show_text(language),
-            settings_menu_text(language),
+            crate::tray_menu_settings_text(language),
             crate::tray_menu_about_text(language),
             crate::tray_menu_exit_text(language),
         );
@@ -913,7 +913,7 @@ fn apply_saved_settings(hwnd: HWND) {
         update_settings_button_font(state.settings_button, font);
         update_settings_button_font(state.about_button, font);
         update_settings_button_font(state.auto_hide_checkbox, font);
-        set_settings_button_text(state.about_button, crate::tray_menu_about_text(language));
+        set_settings_button_text(state.about_button, crate::about_button_text(language));
         if let Some(animations) = state
             .character_catalog
             .get(&config.character)
