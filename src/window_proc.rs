@@ -510,7 +510,7 @@ fn activate_button(hwnd: HWND, button: ControlButton) {
             let previous_remaining = REMAINING_SECONDS.swap(initial_remaining, Ordering::Relaxed);
             *TIMER_STATE.lock().expect("timer state mutex poisoned") = TimerState::NotStarted;
             stop_timer(hwnd);
-            show_pet_reminder(hwnd);
+            hide_pet(hwnd);
             unsafe {
                 invalidate_countdown(hwnd, previous_remaining);
                 invalidate_countdown(hwnd, initial_remaining);
@@ -546,7 +546,8 @@ fn pause_enabled(timer_state: TimerState) -> bool {
 }
 
 fn reset_enabled(timer_state: TimerState, remaining_seconds: u32) -> bool {
-    timer_state != TimerState::NotStarted || remaining_seconds != initial_remaining_seconds()
+    timer_state != TimerState::Finished
+        && (timer_state != TimerState::NotStarted || remaining_seconds != initial_remaining_seconds())
 }
 
 fn start_timer(hwnd: HWND) {
@@ -1010,13 +1011,23 @@ mod tests {
     }
 
     #[test]
+    fn finished_countdown_disables_reset() {
+        let _guard = TIMER_TEST_LOCK.lock().unwrap();
+        for remaining in [0, initial_remaining_seconds()] {
+            assert!(!reset_enabled(TimerState::Finished, remaining));
+        }
+        assert!(play_enabled(TimerState::Finished));
+        assert!(!pause_enabled(TimerState::Finished));
+    }
+
+    #[test]
     fn timer_button_states_allow_reset_before_the_first_tick() {
         let _guard = TIMER_TEST_LOCK.lock().unwrap();
         let initial = initial_remaining_seconds();
         assert!(play_enabled(TimerState::NotStarted));
         assert!(!pause_enabled(TimerState::NotStarted));
         assert!(!reset_enabled(TimerState::NotStarted, initial));
-        for state in [TimerState::Running, TimerState::Paused, TimerState::Finished] {
+        for state in [TimerState::Running, TimerState::Paused] {
             assert!(reset_enabled(state, initial));
             assert_eq!(play_enabled(state), state != TimerState::Running);
             assert_eq!(pause_enabled(state), state == TimerState::Running);
