@@ -19,6 +19,7 @@ const DEFAULT_CHARACTER: &str = "cat";
 pub struct Config {
     pub period: u32,
     pub tray_when_close: bool,
+    pub auto_hide_on_start: bool,
     pub language: String,
     pub theme: String,
     pub character: String,
@@ -29,6 +30,7 @@ impl Default for Config {
         Self {
             period: DEFAULT_PERIOD_SECONDS,
             tray_when_close: DEFAULT_TRAY_WHEN_CLOSE,
+            auto_hide_on_start: true,
             language: DEFAULT_LANGUAGE.to_owned(),
             theme: DEFAULT_THEME.to_owned(),
             character: DEFAULT_CHARACTER.to_owned(),
@@ -40,6 +42,7 @@ impl Default for Config {
 struct ConfigFile {
     period: Option<u32>,
     tray_when_close: Option<bool>,
+    auto_hide_on_start: Option<bool>,
     language: Option<String>,
     theme: Option<String>,
     character: Option<String>,
@@ -59,6 +62,7 @@ impl Config {
         Ok(Self {
             period: file.period.unwrap_or(DEFAULT_PERIOD_SECONDS),
             tray_when_close: file.tray_when_close.unwrap_or(DEFAULT_TRAY_WHEN_CLOSE),
+            auto_hide_on_start: file.auto_hide_on_start.unwrap_or(true),
             language: file.language.unwrap_or_else(|| DEFAULT_LANGUAGE.to_owned()),
             theme: file.theme.unwrap_or_else(|| DEFAULT_THEME.to_owned()),
             character: file.character.unwrap_or_else(|| DEFAULT_CHARACTER.to_owned()),
@@ -82,6 +86,7 @@ impl Config {
         let file = ConfigFile {
             period: Some(self.period),
             tray_when_close: Some(self.tray_when_close),
+            auto_hide_on_start: Some(self.auto_hide_on_start),
             language: Some(self.language.clone()),
             theme: Some(self.theme.clone()),
             character: Some(self.character.clone()),
@@ -115,6 +120,7 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.period, 20 * 60);
         assert!(!config.tray_when_close);
+        assert!(config.auto_hide_on_start);
         assert_eq!(config.language, "auto");
         assert_eq!(config.theme, "system");
         assert_eq!(config.character, "cat");
@@ -145,8 +151,21 @@ mod tests {
     fn omitted_or_null_settings_use_defaults() {
         assert_eq!(Config::from_json("{}").unwrap(), Config::default());
         assert_eq!(
-            Config::from_json(r#"{"period":null,"language":null,"speech_bubble":null}"#).unwrap(),
+            Config::from_json(r#"{"period":null,"language":null,"speech_bubble":null,"auto_hide_on_start":null}"#)
+                .unwrap(),
             Config::default()
         );
+    }
+
+    #[test]
+    fn auto_hide_preference_round_trips_without_changing_other_settings() {
+        for enabled in [false, true] {
+            let config = Config::from_json(&format!(
+                r#"{{"period":90,"language":"zh","auto_hide_on_start":{enabled}}}"#
+            ))
+            .unwrap();
+            assert_eq!(config.auto_hide_on_start, enabled);
+            assert_eq!(Config::from_json(&config.to_json().unwrap()).unwrap(), config);
+        }
     }
 }

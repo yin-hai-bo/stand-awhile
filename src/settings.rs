@@ -994,12 +994,17 @@ mod tests {
         for _ in 0..3 {
             let panel = create_settings_panel(parent, instance, Config::default(), None)?;
             let state = state_mut(panel).unwrap();
-            let latest = Config::default();
+            let latest = Config {
+                auto_hide_on_start: false,
+                ..Config::default()
+            };
             set_window_text(state.period, "90");
             let changed = read_config_without_period(state, latest.clone());
             assert_eq!(changed.period, latest.period);
+            assert!(!changed.auto_hide_on_start);
             let saved = read_config(state, latest.clone());
             assert_eq!(saved.period, 90);
+            assert!(!saved.auto_hide_on_start);
             unsafe { DestroyWindow(panel)? };
         }
         unsafe { DestroyWindow(parent)? };

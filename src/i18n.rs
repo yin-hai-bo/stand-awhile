@@ -45,6 +45,13 @@ pub fn timer_hint_text(language: Language) -> &'static str {
     }
 }
 
+pub fn auto_hide_text(language: Language) -> &'static str {
+    match language {
+        Language::Chinese => "开始倒计时后自动隐藏主窗口",
+        Language::English => "Auto-hide main window when starting the timer",
+    }
+}
+
 fn detect_language_from_lang_id(lang_id: u16) -> Language {
     let primary_language = lang_id & 0x03ff;
     if primary_language == LANG_CHINESE_PRIMARY_ID {

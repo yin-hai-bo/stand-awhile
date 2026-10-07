@@ -162,6 +162,16 @@ mod tests {
                 assert!(measured.right > 0);
                 assert!(measured.right <= (crate::WINDOW_WIDTH - 64) * dpi as i32 / 96);
                 assert!(measured.bottom <= 32 * dpi as i32 / 96);
+                let mut checkbox_text: Vec<u16> = crate::i18n::auto_hide_text(language).encode_utf16().collect();
+                let mut measured = RECT::default();
+                unsafe {
+                    let old = SelectObject(hdc, font.into());
+                    DrawTextW(hdc, &mut checkbox_text, &mut measured, DT_CALCRECT | DT_SINGLELINE);
+                    SelectObject(hdc, old);
+                }
+                // Reserve the window borders, footer buttons, margins, and checkbox glyph.
+                assert!(measured.right <= (crate::WINDOW_WIDTH - 16 - 24 - 96 - 24 - 96 - 48 - 24) * dpi as i32 / 96);
+                assert!(measured.bottom <= 32 * dpi as i32 / 96);
             }
         }
         unsafe { ReleaseDC(None, hdc) };

@@ -52,8 +52,8 @@ use ui::{
     theme::apply_theme,
 };
 use window_proc::{
-    WindowState, attach_window_state, layout_window_state, process_settings_message, set_initial_remaining_seconds,
-    window_proc,
+    WindowState, attach_window_state, create_auto_hide_checkbox, layout_window_state, process_settings_message,
+    set_initial_remaining_seconds, window_proc,
 };
 
 const WINDOW_WIDTH: i32 = 800;
@@ -169,10 +169,13 @@ fn run() -> Result<()> {
     let common_gui_font = common_gui_font(dpi, language == i18n::Language::Chinese);
     let settings_button = create_settings_button(hwnd, instance, settings_menu_text(language), common_gui_font);
     let about_button = create_about_button(hwnd, instance, tray_menu_about_text(language), common_gui_font);
+    let auto_hide_checkbox =
+        create_auto_hide_checkbox(hwnd, instance, language, common_gui_font, config.auto_hide_on_start)?;
     attach_window_state(
         hwnd,
         WindowState {
-            has_started_countdown: false,
+            auto_hide_on_start: config.auto_hide_on_start,
+            auto_hide_checkbox,
             language,
             theme,
             tray_icon,

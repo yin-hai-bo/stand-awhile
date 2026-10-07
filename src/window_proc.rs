@@ -33,20 +33,27 @@ use crate::{
 };
 
 use windows::Win32::{
-    Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
-    Graphics::Gdi::{BeginPaint, EndPaint, GetDC, HFONT, InvalidateRect, PAINTSTRUCT, ReleaseDC},
+    Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
+    Graphics::Gdi::{
+        BeginPaint, DC_BRUSH, EndPaint, GetDC, GetStockObject, HDC, HFONT, InvalidateRect, PAINTSTRUCT, ReleaseDC,
+        SetBkColor, SetDCBrushColor, SetTextColor,
+    },
+    UI::Controls::BST_CHECKED,
     UI::HiDpi::GetDpiForWindow,
     UI::WindowsAndMessaging::{
-        DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetClientRect, GetWindowLongPtrW, HWND_TOP, IDC_HAND,
-        IsDialogMessageW, IsWindow, IsWindowVisible, KillTimer, LoadCursorW, MSG, MoveWindow, PostQuitMessage, SW_HIDE,
-        SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetCursor, SetForegroundWindow, SetTimer,
-        SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_DPICHANGED,
-        WM_DRAWITEM, WM_NCDESTROY, WM_PAINT, WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE, WM_THEMECHANGED, WM_TIMER,
+        BM_GETCHECK, BM_SETCHECK, BN_CLICKED, BS_AUTOCHECKBOX, CreateWindowExW, DefWindowProcW, DestroyWindow,
+        GWLP_USERDATA, GetClientRect, GetWindowLongPtrW, HMENU, HWND_TOP, IDC_HAND, IsDialogMessageW, IsWindow,
+        IsWindowVisible, KillTimer, LoadCursorW, MSG, MoveWindow, PostQuitMessage, SW_HIDE, SW_SHOW, SWP_NOACTIVATE,
+        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetCursor, SetForegroundWindow, SetTimer,
+        SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, WINDOW_STYLE, WM_CLOSE, WM_COMMAND,
+        WM_CTLCOLORBTN, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_NCDESTROY, WM_PAINT,
+        WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE, WM_THEMECHANGED, WM_TIMER, WS_CHILD, WS_TABSTOP, WS_VISIBLE,
     },
 };
 
 pub const TIMER_ID: usize = 1;
 const DEFAULT_INITIAL_REMAINING_SECONDS: u32 = 20 * 60;
+const AUTO_HIDE_CHECKBOX_ID: usize = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TimerState {
@@ -56,20 +63,9 @@ enum TimerState {
     Finished,
 }
 
-#[derive(Clone, Copy)]
-enum StartSource {
-    MainWindow,
-    Pet,
-    Menu,
-}
-
-fn first_start_hides_main_window(started: &mut bool, source: StartSource) -> bool {
-    let first_start = !std::mem::replace(started, true);
-    first_start && !matches!(source, StartSource::MainWindow)
-}
-
 pub struct WindowState {
-    pub has_started_countdown: bool,
+    pub auto_hide_on_start: bool,
+    pub auto_hide_checkbox: HWND,
     pub language: Language,
     pub theme: Theme,
     pub tray_icon: TrayIcon,
@@ -90,6 +86,78 @@ pub struct WindowState {
 static INITIAL_REMAINING_SECONDS: AtomicU32 = AtomicU32::new(DEFAULT_INITIAL_REMAINING_SECONDS);
 static REMAINING_SECONDS: AtomicU32 = AtomicU32::new(DEFAULT_INITIAL_REMAINING_SECONDS);
 static TIMER_STATE: Mutex<TimerState> = Mutex::new(TimerState::NotStarted);
+
+pub fn create_auto_hide_checkbox(
+    parent: HWND,
+    instance: HINSTANCE,
+    language: Language,
+    font: Option<HFONT>,
+    checked: bool,
+) -> windows::core::Result<HWND> {
+    let text: Vec<u16> = crate::i18n::auto_hide_text(language)
+        .encode_utf16()
+        .chain([0])
+        .collect();
+    let checkbox = unsafe {
+        CreateWindowExW(
+            Default::default(),
+            windows::core::w!("BUTTON"),
+            windows::core::PCWSTR(text.as_ptr()),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_AUTOCHECKBOX as u32),
+            0,
+            0,
+            1,
+            1,
+            Some(parent),
+            Some(HMENU(AUTO_HIDE_CHECKBOX_ID as *mut _)),
+            Some(instance),
+            None,
+        )?
+    };
+    update_settings_button_font(checkbox, font);
+    set_auto_hide_checked(checkbox, checked);
+    Ok(checkbox)
+}
+
+fn set_auto_hide_checked(checkbox: HWND, checked: bool) {
+    unsafe {
+        SendMessageW(
+            checkbox,
+            BM_SETCHECK,
+            Some(WPARAM(if checked { BST_CHECKED.0 as usize } else { 0 })),
+            None,
+        );
+    }
+}
+
+fn save_auto_hide_preference(hwnd: HWND) {
+    let Some(state) = window_state_mut(hwnd) else { return };
+    let checked =
+        unsafe { SendMessageW(state.auto_hide_checkbox, BM_GETCHECK, None, None).0 == BST_CHECKED.0 as isize };
+    let result = Config::load().and_then(|mut config| {
+        config.auto_hide_on_start = checked;
+        config.save()
+    });
+    if let Err(error) = result {
+        set_auto_hide_checked(state.auto_hide_checkbox, state.auto_hide_on_start);
+        let text: Vec<u16> = error.to_string().encode_utf16().chain([0]).collect();
+        let title: Vec<u16> = crate::i18n::main_window_title(state.language)
+            .encode_utf16()
+            .chain([0])
+            .collect();
+        unsafe {
+            use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
+            MessageBoxW(
+                Some(hwnd),
+                windows::core::PCWSTR(text.as_ptr()),
+                windows::core::PCWSTR(title.as_ptr()),
+                MB_OK | MB_ICONERROR,
+            );
+        }
+    } else {
+        state.auto_hide_on_start = checked;
+    }
+}
 
 pub fn set_initial_remaining_seconds(seconds: u32) {
     INITIAL_REMAINING_SECONDS.store(seconds, Ordering::Relaxed);
@@ -182,7 +250,7 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
         WM_PET_COMMAND => {
             match wparam.0 {
                 PET_COMMAND_ACKNOWLEDGE => acknowledge_pet(hwnd),
-                PET_COMMAND_START => activate_button(hwnd, ControlButton::Play, StartSource::Menu),
+                PET_COMMAND_START => activate_button(hwnd, ControlButton::Play),
                 PET_COMMAND_SETTINGS => open_settings(hwnd),
                 PET_COMMAND_ABOUT => open_about(hwnd),
                 PET_COMMAND_SHOW_MAIN => unsafe {
@@ -198,6 +266,10 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
         }
         WM_COMMAND => {
             match (wparam.0 & 0xFFFF) as usize {
+                AUTO_HIDE_CHECKBOX_ID if (wparam.0 >> 16) as u32 == BN_CLICKED => {
+                    save_auto_hide_preference(hwnd);
+                    return LRESULT(0);
+                }
                 SETTINGS_BUTTON_ID => {
                     toggle_settings(hwnd);
                     return LRESULT(0);
@@ -230,8 +302,21 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
                 }
             }
             if let Some(button) = button_from_command(wparam) {
-                activate_button(hwnd, button, StartSource::MainWindow);
+                activate_button(hwnd, button);
                 return LRESULT(0);
+            }
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
+        WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => {
+            if window_state(hwnd).is_some_and(|state| state.auto_hide_checkbox == HWND(lparam.0 as _)) {
+                let hdc = HDC(wparam.0 as _);
+                let background = crate::ui::theme::current_background_color();
+                unsafe {
+                    let _ = SetBkColor(hdc, background);
+                    let _ = SetTextColor(hdc, crate::ui::theme::current_text_color());
+                    let _ = SetDCBrushColor(hdc, background);
+                    return LRESULT(GetStockObject(DC_BRUSH).0 as isize);
+                }
             }
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
@@ -330,6 +415,7 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
             if let Some(state) = window_state(hwnd) {
                 update_settings_button_font(state.settings_button, state.common_gui_font);
                 update_settings_button_font(state.about_button, state.common_gui_font);
+                update_settings_button_font(state.auto_hide_checkbox, state.common_gui_font);
                 update_settings_panel_font(state.settings_panel, dpi);
             }
             let _ = layout_window_state(hwnd);
@@ -354,6 +440,7 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
                 unsafe {
                     let _ = InvalidateRect(Some(state.settings_button), None, false);
                     let _ = InvalidateRect(Some(state.about_button), None, false);
+                    let _ = InvalidateRect(Some(state.auto_hide_checkbox), None, false);
                 }
             }
             if let Some(state) = window_state(hwnd) {
@@ -402,7 +489,7 @@ unsafe fn invalidate_countdown(hwnd: HWND, remaining_seconds: u32) {
     }
 }
 
-fn activate_button(hwnd: HWND, button: ControlButton, source: StartSource) {
+fn activate_button(hwnd: HWND, button: ControlButton) {
     let previous_remaining = REMAINING_SECONDS.load(Ordering::Relaxed);
 
     match button {
@@ -418,7 +505,6 @@ fn activate_button(hwnd: HWND, button: ControlButton, source: StartSource) {
             }
             *TIMER_STATE.lock().expect("timer state mutex poisoned") = TimerState::Running;
             start_timer(hwnd);
-            record_countdown_start(hwnd, source);
         }
         ControlButton::Pause => {
             hide_pet(hwnd);
@@ -473,6 +559,7 @@ fn start_timer(hwnd: HWND) {
     unsafe {
         let _ = SetTimer(Some(hwnd), TIMER_ID, 1_000, None);
     }
+    hide_main_window_on_start(hwnd, window_state(hwnd).is_some_and(|state| state.auto_hide_on_start));
 }
 
 fn stop_timer(hwnd: HWND) {
@@ -492,7 +579,6 @@ fn acknowledge_pet(hwnd: HWND) {
     let previous_remaining = REMAINING_SECONDS.swap(initial_remaining, Ordering::Relaxed);
     *TIMER_STATE.lock().expect("timer state mutex poisoned") = TimerState::Running;
     start_timer(hwnd);
-    record_countdown_start(hwnd, StartSource::Pet);
     unsafe {
         invalidate_countdown(hwnd, previous_remaining);
         invalidate_countdown(hwnd, initial_remaining);
@@ -506,11 +592,8 @@ fn hide_pet(hwnd: HWND) {
     }
 }
 
-fn record_countdown_start(hwnd: HWND, source: StartSource) {
-    let hide_main = window_state_mut(hwnd)
-        .map(|state| first_start_hides_main_window(&mut state.has_started_countdown, source))
-        .unwrap_or(false);
-    if hide_main {
+fn hide_main_window_on_start(hwnd: HWND, auto_hide: bool) {
+    if auto_hide {
         unsafe {
             let _ = ShowWindow(hwnd, SW_HIDE);
         }
@@ -572,6 +655,14 @@ fn layout_settings_button(hwnd: HWND) {
     let bottom_margin = scale(32);
     let settings_left = rect.right - right_margin - width;
     unsafe {
+        let _ = MoveWindow(
+            state.auto_hide_checkbox,
+            scale(24),
+            rect.bottom - bottom_margin - height,
+            (settings_left - scale(24) - width - scale(48)).max(0),
+            height,
+            true,
+        );
         let _ = MoveWindow(
             state.settings_button,
             settings_left,
@@ -635,7 +726,7 @@ fn handle_tray_menu_command(hwnd: HWND, wparam: WPARAM) -> bool {
             true
         }
         TRAY_MENU_START_ID => {
-            activate_button(hwnd, ControlButton::Play, StartSource::Menu);
+            activate_button(hwnd, ControlButton::Play);
             true
         }
         TRAY_MENU_ABOUT_ID => {
@@ -664,6 +755,7 @@ fn open_settings(hwnd: HWND) {
     unsafe {
         let _ = ShowWindow(state.timer_panel, SW_HIDE);
         let _ = ShowWindow(state.about_button, SW_HIDE);
+        let _ = ShowWindow(state.auto_hide_checkbox, SW_HIDE);
         let _ = SetWindowPos(
             state.settings_button,
             Some(HWND_TOP),
@@ -714,6 +806,7 @@ fn show_timer_panel(hwnd: HWND) {
         unsafe {
             let _ = ShowWindow(state.timer_panel, SW_SHOW);
             let _ = ShowWindow(state.about_button, SW_SHOW);
+            let _ = ShowWindow(state.auto_hide_checkbox, SW_SHOW);
         }
     }
 }
@@ -756,6 +849,9 @@ fn apply_saved_settings(hwnd: HWND) {
     let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
     if let Some(state) = window_state_mut(hwnd) {
         state.language = language;
+        state.auto_hide_on_start = config.auto_hide_on_start;
+        set_auto_hide_checked(state.auto_hide_checkbox, config.auto_hide_on_start);
+        set_settings_button_text(state.auto_hide_checkbox, crate::i18n::auto_hide_text(language));
         unsafe {
             let _ = InvalidateRect(Some(state.timer_panel), None, false);
         }
@@ -786,6 +882,7 @@ fn apply_saved_settings(hwnd: HWND) {
         update_settings_panel_font(state.settings_panel, dpi);
         update_settings_button_font(state.settings_button, font);
         update_settings_button_font(state.about_button, font);
+        update_settings_button_font(state.auto_hide_checkbox, font);
         set_settings_button_text(state.about_button, crate::tray_menu_about_text(language));
         if let Some(animations) = state
             .character_catalog
@@ -835,25 +932,44 @@ mod tests {
     }
 
     #[test]
-    fn first_pet_or_menu_start_hides_main_window_only_once_per_app_session() {
-        for first_source in [StartSource::Pet, StartSource::Menu] {
-            let mut started = false;
-            assert!(first_start_hides_main_window(&mut started, first_source));
-            // Reopening the window and starting again after pause, reset, or a
-            // reminder must not hide it automatically.
-            for later_source in [StartSource::Pet, StartSource::Menu, StartSource::MainWindow] {
-                assert!(!first_start_hides_main_window(&mut started, later_source));
+    fn auto_hide_option_controls_every_start_and_does_not_hide_when_toggled() {
+        use windows::Win32::{
+            System::LibraryLoader::GetModuleHandleW,
+            UI::WindowsAndMessaging::{WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP},
+        };
+        unsafe {
+            let instance: HINSTANCE = GetModuleHandleW(None).unwrap().into();
+            let hwnd = CreateWindowExW(
+                WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                windows::core::w!("STATIC"),
+                windows::core::w!(""),
+                WS_POPUP,
+                -10000,
+                -10000,
+                1,
+                1,
+                None,
+                None,
+                Some(instance),
+                None,
+            )
+            .unwrap();
+            let checkbox = create_auto_hide_checkbox(hwnd, instance, Language::Chinese, None, true).unwrap();
+            assert_eq!(
+                SendMessageW(checkbox, BM_GETCHECK, None, None).0,
+                BST_CHECKED.0 as isize
+            );
+            for enabled in [true, true, false, true, false] {
+                let _ = ShowWindow(hwnd, windows::Win32::UI::WindowsAndMessaging::SW_SHOWNOACTIVATE);
+                set_auto_hide_checked(checkbox, enabled);
+                assert!(IsWindowVisible(hwnd).as_bool(), "toggling must not hide the window");
+                let checked = SendMessageW(checkbox, BM_GETCHECK, None, None).0 == BST_CHECKED.0 as isize;
+                assert_eq!(checked, enabled);
+                hide_main_window_on_start(hwnd, checked);
+                assert_eq!(IsWindowVisible(hwnd).as_bool(), !enabled);
             }
+            DestroyWindow(hwnd).unwrap();
         }
-    }
-
-    #[test]
-    fn first_main_window_play_consumes_first_start_without_hiding() {
-        let mut started = false;
-        assert!(!first_start_hides_main_window(&mut started, StartSource::MainWindow));
-        assert!(started);
-        assert!(!first_start_hides_main_window(&mut started, StartSource::Menu));
-        assert!(!first_start_hides_main_window(&mut started, StartSource::Pet));
     }
 
     #[test]
