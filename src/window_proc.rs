@@ -529,13 +529,17 @@ fn sync_control_button_enabled(hwnd: HWND) -> windows::core::Result<()> {
     let timer_state = *TIMER_STATE.lock().expect("timer state mutex poisoned");
     let remaining = REMAINING_SECONDS.load(Ordering::Relaxed);
 
+    let state = window_state_mut(hwnd).expect("window state missing");
     update_control_buttons_for(
-        &window_state(hwnd).expect("window state missing").control_buttons,
+        &state.control_buttons,
         play_enabled(timer_state),
         pause_enabled(timer_state),
         reset_enabled(timer_state, remaining),
     );
-    Ok(())
+    state.tray_icon.update_tooltip(
+        hwnd,
+        crate::i18n::tray_tooltip(state.language, timer_state == TimerState::Running),
+    )
 }
 
 fn play_enabled(timer_state: TimerState) -> bool {
@@ -892,7 +896,10 @@ fn apply_saved_settings(hwnd: HWND) {
         state.common_gui_font = font;
         let _ = state.tray_icon.update_language(
             hwnd,
-            crate::i18n::main_window_title(language),
+            crate::i18n::tray_tooltip(
+                language,
+                *TIMER_STATE.lock().expect("timer state mutex poisoned") == TimerState::Running,
+            ),
             crate::tray_menu_start_text(language),
             crate::tray_menu_show_text(language),
             settings_menu_text(language),
@@ -1049,6 +1056,20 @@ mod tests {
                 *TIMER_STATE.lock().unwrap() = TimerState::NotStarted;
                 mode.finish(hwnd);
                 assert_eq!(*TIMER_STATE.lock().unwrap(), TimerState::Running);
+                assert_eq!(
+                    window_state(hwnd).unwrap().tray_icon.test_tooltip(),
+                    "Stand Awhile (Timing)"
+                );
+                activate_button(hwnd, ControlButton::Pause);
+                assert_eq!(window_state(hwnd).unwrap().tray_icon.test_tooltip(), "Stand Awhile");
+                activate_button(hwnd, ControlButton::Play);
+                assert_eq!(
+                    window_state(hwnd).unwrap().tray_icon.test_tooltip(),
+                    "Stand Awhile (Timing)"
+                );
+                activate_button(hwnd, ControlButton::Reset);
+                assert_eq!(window_state(hwnd).unwrap().tray_icon.test_tooltip(), "Stand Awhile");
+                activate_button(hwnd, ControlButton::Play);
                 assert_eq!(remaining_seconds(), 2);
                 assert!(!IsWindowVisible(hwnd).as_bool());
                 assert!(!IsWindowVisible(pet_hwnd).as_bool());
@@ -1073,6 +1094,7 @@ mod tests {
 
                 SendMessageW(hwnd, WM_TIMER, Some(WPARAM(TIMER_ID)), None);
                 assert_eq!(*TIMER_STATE.lock().unwrap(), TimerState::Finished);
+                assert_eq!(window_state(hwnd).unwrap().tray_icon.test_tooltip(), "Stand Awhile");
                 assert_eq!(REMAINING_SECONDS.load(Ordering::Relaxed), 0);
                 assert!(IsWindowVisible(pet_hwnd).as_bool());
                 let _ = ShowWindow(hwnd, SW_HIDE);

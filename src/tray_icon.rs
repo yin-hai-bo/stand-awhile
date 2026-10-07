@@ -35,6 +35,11 @@ pub struct TrayIcon {
 }
 
 impl TrayIcon {
+    #[cfg(test)]
+    pub(crate) fn test_tooltip(&self) -> &str {
+        &self.tooltip
+    }
+
     pub fn create(
         hwnd: HWND,
         icon: HICON,
@@ -126,6 +131,23 @@ impl TrayIcon {
             }
         }
         Ok(())
+    }
+
+    pub fn update_tooltip(&mut self, hwnd: HWND, tooltip: &str) -> Result<()> {
+        self.update_tooltip_with(hwnd, tooltip, notify_icon)
+    }
+
+    fn update_tooltip_with(
+        &mut self,
+        hwnd: HWND,
+        tooltip: &str,
+        mut notify: impl FnMut(NOTIFY_ICON_MESSAGE, &NOTIFYICONDATAW) -> Result<()>,
+    ) -> Result<()> {
+        if self.tooltip == tooltip {
+            return Ok(());
+        }
+        self.tooltip = tooltip.to_owned();
+        notify(NIM_MODIFY, &notify_icon_data(hwnd, self.icon, &self.tooltip))
     }
 
     pub fn handle_callback(&self, hwnd: HWND, lparam: LPARAM) -> Result<bool> {
@@ -262,6 +284,33 @@ mod tests {
             settings_text: "设置".into(),
             about_text: "关于".into(),
             exit_menu_text: "退出".into(),
+        }
+    }
+
+    #[test]
+    fn tooltip_changes_notify_once_and_survive_explorer_restart() {
+        let mut tray = tray();
+        let hwnd = HWND(456usize as _);
+        for tooltip in ["站一站（计时中）", "站一站", "Stand Awhile (Timing)"] {
+            let mut calls = 0;
+            for _ in 0..2 {
+                tray.update_tooltip_with(hwnd, tooltip, |command, data| {
+                    calls += 1;
+                    assert_eq!(command, NIM_MODIFY);
+                    assert_eq!(data.hWnd, hwnd);
+                    let length = data.szTip.iter().position(|c| *c == 0).unwrap();
+                    assert_eq!(String::from_utf16(&data.szTip[..length]).unwrap(), tooltip);
+                    Ok(())
+                })
+                .unwrap();
+            }
+            assert_eq!(calls, 1, "unchanged countdown ticks must not notify the Shell again");
+            tray.handle_taskbar_created_with(hwnd, tray.taskbar_created_message, |_, data| {
+                let length = data.szTip.iter().position(|c| *c == 0).unwrap();
+                assert_eq!(String::from_utf16(&data.szTip[..length]).unwrap(), tooltip);
+                Ok(())
+            })
+            .unwrap();
         }
     }
 

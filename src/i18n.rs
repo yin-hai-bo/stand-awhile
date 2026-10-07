@@ -31,6 +31,14 @@ pub fn main_window_title(language: Language) -> &'static str {
     }
 }
 
+pub fn tray_tooltip(language: Language, running: bool) -> &'static str {
+    match (language, running) {
+        (Language::Chinese, true) => "站一站（计时中）",
+        (Language::English, true) => "Stand Awhile (Timing)",
+        (_, false) => main_window_title(language),
+    }
+}
+
 pub fn existing_instance_unavailable_text(language: Language) -> &'static str {
     match language {
         Language::Chinese => "程序已在运行，但未能找到主窗口。请稍后重试。",
@@ -71,6 +79,15 @@ fn detect_language_from_lang_id(lang_id: u16) -> Language {
 #[cfg(test)]
 mod tests {
     use super::{Language, detect_language_from_lang_id, resolve_language};
+
+    #[test]
+    fn tray_tooltips_follow_language_and_running_state() {
+        assert_eq!(super::tray_tooltip(Language::Chinese, true), "站一站（计时中）");
+        assert_eq!(super::tray_tooltip(Language::English, true), "Stand Awhile (Timing)");
+        for language in [Language::Chinese, Language::English] {
+            assert_eq!(super::tray_tooltip(language, false), super::main_window_title(language));
+        }
+    }
 
     #[test]
     fn detects_chinese_as_chinese() {
