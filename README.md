@@ -57,7 +57,7 @@ when the countdown ends; the tray can restore the main window at any time.
 Without the argument, or with the preference disabled, startup is manual.
 An `--autostart` invocation while an instance is running exits silently,
 regardless of the preference, without changing its windows or countdown.
-Windows login startup registration is not implemented yet.
+Enable **Launch at startup** in Settings to use this mode automatically at Windows sign-in.
 
 The Pet is the application's reminder channel. It can be dragged, clicked to
 acknowledge a reminder, or controlled through its context menu. The application
@@ -88,8 +88,17 @@ window; the countdown and any visible Pet reminder continue.
 Open **Settings** from the main window, tray menu, or Pet menu. Character,
 language, theme, close behavior, and auto-hide changes are saved and applied immediately.
 The auto-hide Yes/No options share the main window checkbox's preference.
-**Launch at startup** also has Yes/No options, defaulting to No. This preference
-is saved only; automatic startup is not implemented yet.
+**Launch at startup** has Yes/No options, defaulting to No. Selecting Yes registers
+the quoted current EXE path with `--autostart` in the current user's
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, under `Yinhaibo.StandAwhile`.
+Selecting No removes that value. Administrator privileges are not required.
+Changing this option preserves the current countdown and window state. If the
+registry update fails, the previous configuration and radio selection are
+restored and an error is shown; a failed configuration restore is reported too.
+Each primary instance also synchronizes the entry from the configuration, so
+manually opening a moved EXE updates its registered path. Startup sync errors
+are shown while the app continues running. The app does not change Windows'
+separate enabled/disabled status for startup apps.
 Settings accepts whole minutes (at least 1), converted to seconds when you click
 **Back**. Existing intervals are displayed rounded up to minutes; leaving the
 input unchanged preserves the original seconds. The countdown always displays
@@ -107,7 +116,7 @@ the file, then restart. Omitted or null fields use the defaults below.
 | `language` | `"auto"` | `"auto"`, `"zh"`, or `"en"`; Auto follows the Windows UI language, using Chinese for Chinese locales and English otherwise |
 | `theme` | `"system"` | `"system"`, `"light"`, or `"dark"` |
 | `tray_when_close` | `true` | `true` hides the main window on close; `false` exits |
-| `launch_at_startup` | `false` | Enables background countdown when launched with `--autostart`; no Windows startup registration yet |
+| `launch_at_startup` | `false` | Registers Windows sign-in startup with `--autostart`, starting a hidden background countdown |
 
 Runtime information is stored separately in the UTF-8 file
 `%LOCALAPPDATA%\yinhaibo\stand-awhile\state.json`.

@@ -5,6 +5,7 @@ mod animation;
 mod app_state;
 #[allow(dead_code)]
 pub(crate) mod asset;
+mod autostart;
 mod config;
 mod gdi;
 mod i18n;
@@ -86,6 +87,7 @@ fn run() -> Result<()> {
     };
     unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)? };
     let config = Config::load()?;
+    let startup_sync = autostart::sync(config.launch_at_startup);
     let startup_mode = startup::StartupMode::new(autostart, config.launch_at_startup);
     let app_state = AppState::load()?;
     let language = config.language();
@@ -205,6 +207,9 @@ fn run() -> Result<()> {
     apply_theme(hwnd, theme)?;
 
     startup_mode.finish(hwnd);
+    if let Err(error) = startup_sync {
+        autostart::show_error(hwnd, language, &error);
+    }
 
     let mut message = MSG::default();
     loop {

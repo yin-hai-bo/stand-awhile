@@ -394,9 +394,20 @@ unsafe extern "system" fn settings_window_proc(hwnd: HWND, msg: u32, wparam: WPA
             }
             if notification == BN_CLICKED {
                 match id {
+                    STARTUP_YES_ID | STARTUP_NO_ID => {
+                        if let Some(state) = state_mut(hwnd) {
+                            let result = Config::load().and_then(|previous| {
+                                apply_startup_preference(state, previous, Config::save, crate::autostart::sync)
+                            });
+                            if let Err(error) = result {
+                                restore_startup_radio(state);
+                                crate::autostart::show_error(hwnd, state.config.language(), &error);
+                            }
+                        }
+                    }
                     CHARACTER_CAT_ID | CHARACTER_DOG_ID | LANGUAGE_AUTO_ID | LANGUAGE_ZH_ID | LANGUAGE_EN_ID
                     | THEME_SYSTEM_ID | THEME_LIGHT_ID | THEME_DARK_ID | CLOSE_EXIT_ID | CLOSE_TRAY_ID
-                    | AUTO_HIDE_YES_ID | AUTO_HIDE_NO_ID | STARTUP_YES_ID | STARTUP_NO_ID => {
+                    | AUTO_HIDE_YES_ID | AUTO_HIDE_NO_ID => {
                         if let Some(state) = state_mut(hwnd) {
                             if let Ok(config) = Config::load().map(|config| read_config_without_period(state, config)) {
                                 if config.save().is_ok() {
@@ -960,6 +971,31 @@ pub fn save_settings_panel(hwnd: HWND) -> Result<()> {
     read_config(state, Config::load()?).save()
 }
 
+fn restore_startup_radio(state: &SettingsState) {
+    set_radio_group(
+        &state.launch_at_startup,
+        if state.config.launch_at_startup { "yes" } else { "no" },
+        &["yes", "no"],
+    );
+}
+
+fn apply_startup_preference(
+    state: &mut SettingsState,
+    previous: Config,
+    save: impl FnMut(&Config) -> Result<()>,
+    sync: impl FnOnce(bool) -> Result<()>,
+) -> Result<()> {
+    let mut next = previous.clone();
+    next.launch_at_startup = is_checked(state.launch_at_startup[0]);
+    state.config = previous;
+    let result = crate::autostart::save_preference(&state.config, &next, save, sync);
+    if result.is_ok() {
+        state.config = next;
+    }
+    restore_startup_radio(state);
+    result
+}
+
 fn read_config_without_period(state: &SettingsState, mut config: Config) -> Config {
     config.character = radio_text(&state.character, &["cat", "dog"]);
     config.language = radio_text(&state.language, &["auto", "zh", "en"]);
@@ -1131,6 +1167,94 @@ fn wide(value: &str) -> Vec<u16> {
 mod tests {
     use super::*;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+
+    #[test]
+    fn startup_changes_restore_radios_on_failure_and_preserve_unsaved_minutes() -> Result<()> {
+        use windows::Win32::Foundation::ERROR_ACCESS_DENIED;
+        let instance: HINSTANCE = unsafe { GetModuleHandleW(None)? }.into();
+        let parent = unsafe {
+            CreateWindowExW(
+                Default::default(),
+                w!("STATIC"),
+                w!(""),
+                Default::default(),
+                0,
+                0,
+                800,
+                533,
+                None,
+                None,
+                Some(instance),
+                None,
+            )?
+        };
+        for previous_enabled in [false, true] {
+            let previous = Config {
+                period: 90,
+                launch_at_startup: previous_enabled,
+                ..Config::default()
+            };
+            let panel = create_settings_panel(parent, instance, previous.clone(), None)?;
+            let state = state_mut(panel).unwrap();
+            set_window_text(state.period, "37");
+            for failure in 0..4 {
+                set_radio_group(
+                    &state.launch_at_startup,
+                    if previous_enabled { "no" } else { "yes" },
+                    &["yes", "no"],
+                );
+                let mut saves = 0;
+                let mut syncs = 0;
+                let result = apply_startup_preference(
+                    state,
+                    previous.clone(),
+                    |_| {
+                        saves += 1;
+                        if failure == 0 || (failure == 2 && saves == 2) {
+                            Err(Error::from_hresult(ERROR_ACCESS_DENIED.to_hresult()))
+                        } else {
+                            Ok(())
+                        }
+                    },
+                    |enabled| {
+                        syncs += 1;
+                        assert_eq!(enabled, !previous_enabled);
+                        if failure == 3 {
+                            Ok(())
+                        } else {
+                            Err(Error::from_hresult(ERROR_ACCESS_DENIED.to_hresult()))
+                        }
+                    },
+                );
+                assert_eq!(result.is_ok(), failure == 3);
+                assert_eq!(syncs, usize::from(failure != 0));
+                assert_eq!(saves, if failure == 1 || failure == 2 { 2 } else { 1 });
+                let expected = if failure == 3 {
+                    !previous_enabled
+                } else {
+                    previous_enabled
+                };
+                assert_eq!(is_checked(state.launch_at_startup[0]), expected);
+                assert_eq!(is_checked(state.launch_at_startup[1]), !expected);
+                assert_eq!(
+                    state.config,
+                    Config {
+                        launch_at_startup: expected,
+                        ..previous.clone()
+                    }
+                );
+                assert_eq!(get_window_text(state.period), "37");
+                assert!(state.period_changed);
+            }
+            unsafe {
+                DestroyWindow(panel)?;
+            }
+        }
+        unsafe {
+            DestroyWindow(parent)?;
+        }
+        Ok(())
+    }
 
     #[test]
     fn settings_focus_starts_in_minutes_and_tabs_through_back_button() -> Result<()> {

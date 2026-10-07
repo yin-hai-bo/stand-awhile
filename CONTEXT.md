@@ -10,6 +10,7 @@ window messages, animation updates, and rendering run on the main thread.
 | `main.rs` | DPI awareness, configuration, GDI+ startup, window creation, message loop |
 | `single_instance.rs` | Session-local instance mutex, bounded existing-window lookup, activation message |
 | `startup.rs` | `--autostart` parsing, duplicate-launch policy, initial visibility and countdown start |
+| `autostart.rs` | Current-user Run entry synchronization, configuration rollback and startup error messages |
 | `window_proc.rs` | Countdown state, Pet commands, settings application, main window lifetime |
 | `settings.rs`, `config.rs` | Settings UI and UTF-8 JSON persistence in Roaming AppData |
 | `asset.rs`, `build.rs` | Embedded manifest and PNGs; in-memory GDI+ decoding and character catalog |
