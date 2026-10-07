@@ -539,9 +539,7 @@ unsafe extern "system" fn pet_window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
             LRESULT(0)
         }
         WM_RBUTTONUP => {
-            if let Some(state) = state_mut(hwnd) {
-                let _ = show_context_menu(hwnd, state);
-            }
+            let _ = show_context_menu(hwnd);
             LRESULT(0)
         }
         WM_NCDESTROY => {
@@ -667,14 +665,21 @@ fn end_drag(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
     Ok(())
 }
 
-fn show_context_menu(hwnd: HWND, state: &PetWindowState) -> Result<()> {
+fn show_context_menu(hwnd: HWND) -> Result<()> {
+    // Do not hold a window-state reference across the menu's nested message loop.
+    let (owner, start_text, show_main_text, settings_text, about_text, exit_text) = {
+        let state = state_mut(hwnd).ok_or_else(Error::from_win32)?;
+        (
+            state.owner,
+            wide_null(&state.start_menu_text),
+            wide_null(&state.show_main_menu_text),
+            wide_null(&state.settings_menu_text),
+            wide_null(&state.about_menu_text),
+            wide_null(&state.exit_menu_text),
+        )
+    };
     let menu = unsafe { CreatePopupMenu()? };
     unsafe {
-        let start_text = wide_null(&state.start_menu_text);
-        let show_main_text = wide_null(&state.show_main_menu_text);
-        let settings_text = wide_null(&state.settings_menu_text);
-        let about_text = wide_null(&state.about_menu_text);
-        let exit_text = wide_null(&state.exit_menu_text);
         AppendMenuW(menu, MF_STRING, PET_MENU_START, PCWSTR(start_text.as_ptr()))?;
         AppendMenuW(menu, MF_STRING, PET_MENU_SHOW_MAIN, PCWSTR(show_main_text.as_ptr()))?;
         AppendMenuW(menu, MF_STRING, PET_MENU_SETTINGS, PCWSTR(settings_text.as_ptr()))?;
@@ -700,11 +705,11 @@ fn show_context_menu(hwnd: HWND, state: &PetWindowState) -> Result<()> {
     };
 
     match command {
-        PET_MENU_START => post_pet_command(state.owner, PET_COMMAND_START),
-        PET_MENU_SHOW_MAIN => post_pet_command(state.owner, PET_COMMAND_SHOW_MAIN),
-        PET_MENU_SETTINGS => post_pet_command(state.owner, PET_COMMAND_SETTINGS),
-        PET_MENU_ABOUT => post_pet_command(state.owner, PET_COMMAND_ABOUT),
-        PET_MENU_EXIT => post_pet_command(state.owner, PET_COMMAND_EXIT),
+        PET_MENU_START => post_pet_command(owner, PET_COMMAND_START),
+        PET_MENU_SHOW_MAIN => post_pet_command(owner, PET_COMMAND_SHOW_MAIN),
+        PET_MENU_SETTINGS => post_pet_command(owner, PET_COMMAND_SETTINGS),
+        PET_MENU_ABOUT => post_pet_command(owner, PET_COMMAND_ABOUT),
+        PET_MENU_EXIT => post_pet_command(owner, PET_COMMAND_EXIT),
         _ => {}
     }
     Ok(())
