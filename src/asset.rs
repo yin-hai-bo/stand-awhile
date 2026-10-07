@@ -388,10 +388,14 @@ mod tests {
             assert_eq!(animations.jump.frames.len(), 8);
             assert!(animations.jump.frames.iter().all(|frame| frame.hitbox.is_some()));
         }
-        // Verify every manifest frame, including animations reserved for later use.
+        // Every embedded frame must belong to one of the three runtime animations.
         let manifest = load_manifest().unwrap();
         let mut frame_count = 0;
         for character in manifest.characters.values() {
+            assert_eq!(
+                character.animations.keys().map(String::as_str).collect::<Vec<_>>(),
+                ["idle", "jump", "walk"]
+            );
             for animation in character.animations.values() {
                 for index in 1..=animation.frame_count {
                     let path = character
@@ -405,6 +409,7 @@ mod tests {
             }
         }
         assert_eq!(frame_count, super::EMBEDDED_FRAMES.len());
+        assert_eq!(frame_count, 56);
         assert!(super::decode_png_frame(b"not a PNG").is_err());
     }
 

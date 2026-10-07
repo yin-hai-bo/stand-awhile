@@ -40,8 +40,8 @@ window.
 ### Animation clip
 
 A named ordered sequence of frames with a frame duration and loop mode. The
-runtime uses `idle`, `walk`, and `jump` for either Cat or Dog. All PNG frames
-are embedded, while the runtime catalog decodes these three clips per character.
+runtime uses `idle`, `walk`, and `jump` for either Cat or Dog. Only these clips'
+56 PNG frames are retained and embedded, and the runtime catalog decodes all of them.
 
 ### Animation player
 

@@ -43,7 +43,8 @@
 ## 资源、设置与位置
 
 角色资源由 `assets/pets/cat-dog/manifest.json` 描述。构建时嵌入 manifest
-和所有 PNG，运行时无需 assets 文件夹。启动时通过 GDI+ 内存流解码每个
+和保留的 56 张 PNG（仅 Idle、Walk、Jump），运行时无需 assets 文件夹。
+未使用的 Run、Fall、Hurt、Dead、Slide 不再保留或嵌入。启动时通过 GDI+ 内存流解码每个
 角色的 `idle`、`walk`、`jump` 并保存在角色目录中；每个动画至少一帧，
 按照 manifest 中的数字顺序取帧。替换图片或 manifest 后需要重新构建。
 
