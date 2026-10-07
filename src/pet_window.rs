@@ -27,8 +27,8 @@ use windows::{
 
 use crate::{
     animation::{AnimationPlayer, PlaybackState},
+    app_state::{PetPosition, save_pet_position},
     asset::{CharacterAnimations, PreparedAnimation, PreparedFrame},
-    config::{PetPosition, save_pet_position},
     i18n::Language,
     render::{LayeredRenderer, PixelSurface, SurfacePoint},
     speech_bubble_window::SpeechBubbleController,

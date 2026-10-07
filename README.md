@@ -87,7 +87,12 @@ the file, then restart. Omitted or null fields use the defaults below.
 | `language` | `"auto"` | `"auto"`, `"zh"`, or `"en"`; Auto follows the Windows UI language, using Chinese for Chinese locales and English otherwise |
 | `theme` | `"system"` | `"system"`, `"light"`, or `"dark"` |
 | `tray_when_close` | `false` | `true` hides the main window on close; `false` exits |
-| `pet_position` | `null` | Position saved automatically after dragging |
+
+Runtime information is stored separately in the UTF-8 file
+`%LOCALAPPDATA%\yhb\stand-awhile\state.json`.
+It records `pet_position` automatically after dragging. Older
+positions in `config.json` are ignored; the first launch without `state.json`
+uses the default position.
 
 ### Build from Source
 

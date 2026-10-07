@@ -969,11 +969,10 @@ fn wide(value: &str) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::PetPosition;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 
     #[test]
-    fn settings_preserve_new_pet_position_and_release_state_on_close() -> Result<()> {
+    fn settings_preserve_period_until_saved_and_release_state_on_close() -> Result<()> {
         let instance: HINSTANCE = unsafe { GetModuleHandleW(None)? }.into();
         let parent = unsafe {
             CreateWindowExW(
@@ -995,23 +994,12 @@ mod tests {
         for _ in 0..3 {
             let panel = create_settings_panel(parent, instance, Config::default(), None)?;
             let state = state_mut(panel).unwrap();
-            let latest = Config {
-                pet_position: Some(PetPosition {
-                    monitor: "new monitor".into(),
-                    relative_x: 20,
-                    relative_y: 30,
-                    screen_x: 40,
-                    screen_y: 50,
-                }),
-                ..Config::default()
-            };
+            let latest = Config::default();
             set_window_text(state.period, "90");
             let changed = read_config_without_period(state, latest.clone());
-            assert_eq!(changed.pet_position, latest.pet_position);
             assert_eq!(changed.period, latest.period);
             let saved = read_config(state, latest.clone());
             assert_eq!(saved.period, 90);
-            assert_eq!(saved.pet_position, latest.pet_position);
             unsafe { DestroyWindow(panel)? };
         }
         unsafe { DestroyWindow(parent)? };

@@ -2,11 +2,13 @@
 
 mod about;
 mod animation;
+mod app_state;
 #[allow(dead_code)]
 pub(crate) mod asset;
 mod config;
 mod gdi;
 mod i18n;
+mod persistence;
 mod pet_window;
 #[allow(dead_code)]
 mod render;
@@ -18,6 +20,7 @@ mod tray_icon;
 mod ui;
 mod window_proc;
 
+use crate::app_state::AppState;
 use crate::asset::load_character_catalog;
 use crate::config::Config;
 use crate::pet_window::PetWindow;
@@ -78,6 +81,7 @@ fn main() {
 fn run() -> Result<()> {
     unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)? };
     let config = Config::load()?;
+    let app_state = AppState::load()?;
     let language = config.language();
     let theme = config.theme();
     set_initial_remaining_seconds(config.period);
@@ -147,7 +151,7 @@ fn run() -> Result<()> {
         hwnd,
         animations,
         language,
-        config.pet_position.clone(),
+        app_state.pet_position,
         settings_menu_text(language),
     )?;
     pet_window.set_language(language);
