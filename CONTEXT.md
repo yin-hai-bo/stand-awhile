@@ -26,6 +26,11 @@ is visible, including its entrance and exit animations, and `Instant` to
 select frames. Hiding the Pet stops that timer; queued timer messages do
 not update or render a hidden Pet. There is no asset worker or GPU renderer.
 
+At non-native DPI, looping Idle/Walk frames are resampled lazily once and
+cached without their transparent padding. Restoring a cached frame preserves
+the full surface pixels and alpha hit testing. Changing character or DPI
+clears the cache; native-size frames and the one-shot Jump are not cached.
+
 The countdown intentionally accepts occasional delays of a few seconds to
 ten or more seconds; exact wall-clock timing is not required. See
 [ADR 0003](docs/adr/0003-countdown-timing-tolerance.md).

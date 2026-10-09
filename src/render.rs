@@ -22,6 +22,66 @@ pub struct PixelSurface {
     pixels: Vec<u8>,
 }
 
+/// Lossless snapshot without the transparent padding around an animation frame.
+pub(crate) struct CachedSurface {
+    size: (u32, u32),
+    origin: (u32, u32),
+    row_bytes: usize,
+    pixels: Vec<u8>,
+}
+
+impl CachedSurface {
+    pub(crate) fn new(surface: &PixelSurface) -> Self {
+        let mut left = surface.width;
+        let mut top = surface.height;
+        let mut right = 0;
+        let mut bottom = 0;
+        for (y, row) in surface.pixels.chunks_exact(surface.width as usize * 4).enumerate() {
+            for (x, pixel) in row.chunks_exact(4).enumerate() {
+                if pixel != [0, 0, 0, 0] {
+                    left = left.min(x as u32);
+                    top = top.min(y as u32);
+                    right = right.max(x as u32 + 1);
+                    bottom = bottom.max(y as u32 + 1);
+                }
+            }
+        }
+        let row_bytes = right.saturating_sub(left) as usize * 4;
+        let mut pixels = Vec::with_capacity(row_bytes * bottom.saturating_sub(top) as usize);
+        if row_bytes > 0 {
+            for y in top..bottom {
+                let start = (y as usize * surface.width as usize + left as usize) * 4;
+                pixels.extend_from_slice(&surface.pixels[start..start + row_bytes]);
+            }
+        }
+        Self {
+            size: (surface.width, surface.height),
+            origin: (left, top),
+            row_bytes,
+            pixels,
+        }
+    }
+
+    pub(crate) fn restore(&self, surface: &mut PixelSurface) -> std::result::Result<(), SurfaceError> {
+        if self.size != (surface.width, surface.height) {
+            return Err(SurfaceError::InvalidSize);
+        }
+        surface.clear();
+        if self.row_bytes > 0 {
+            for (y, row) in self.pixels.chunks_exact(self.row_bytes).enumerate() {
+                let start = ((self.origin.1 as usize + y) * surface.width as usize + self.origin.0 as usize) * 4;
+                surface.pixels[start..start + self.row_bytes].copy_from_slice(row);
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn byte_len(&self) -> usize {
+        self.pixels.len()
+    }
+}
+
 impl PixelSurface {
     pub fn new(width: u32, height: u32) -> std::result::Result<Self, SurfaceError> {
         if width == 0 || height == 0 {
@@ -172,7 +232,7 @@ impl LayeredRenderer {
 
 #[cfg(test)]
 mod tests {
-    use super::{PixelSurface, SurfaceError, SurfacePoint};
+    use super::{CachedSurface, PixelSurface, SurfaceError, SurfacePoint};
     use crate::asset::{FrameHitbox, PreparedFrame};
 
     fn frame(width: u32, height: u32, pixels: Vec<u8>) -> PreparedFrame {
@@ -186,6 +246,49 @@ mod tests {
                 right: width,
                 bottom: height,
             }),
+        }
+    }
+
+    #[test]
+    fn cached_surface_preserves_pixels_and_discards_transparent_padding() {
+        let mut original = PixelSurface::new(6, 5).unwrap();
+        original
+            .draw_frame(&frame(2, 2, (1..=16).collect()), SurfacePoint { x: 3, y: 2 })
+            .unwrap();
+        let cached = CachedSurface::new(&original);
+        assert_eq!(cached.byte_len(), 16);
+        let mut restored = PixelSurface::new(6, 5).unwrap();
+        restored.pixels.fill(255);
+        cached.restore(&mut restored).unwrap();
+        assert_eq!(restored, original);
+        assert_eq!(
+            cached.restore(&mut PixelSurface::new(7, 5).unwrap()),
+            Err(SurfaceError::InvalidSize)
+        );
+    }
+
+    #[test]
+    fn cached_surface_preserves_empty_frames_and_every_edge() {
+        for (width, height) in [(1, 1), (6, 5)] {
+            let mut original = PixelSurface::new(width, height).unwrap();
+            let cached = CachedSurface::new(&original);
+            assert_eq!(cached.byte_len(), 0);
+            let mut restored = original.clone();
+            restored.pixels.fill(255);
+            cached.restore(&mut restored).unwrap();
+            assert_eq!(restored, original);
+            for origin in [
+                SurfacePoint { x: 0, y: 0 },
+                SurfacePoint {
+                    x: width as i32 - 1,
+                    y: height as i32 - 1,
+                },
+            ] {
+                original.clear();
+                original.draw_frame(&frame(1, 1, vec![1, 2, 3, 0]), origin).unwrap();
+                CachedSurface::new(&original).restore(&mut restored).unwrap();
+                assert_eq!(restored, original);
+            }
         }
     }
 

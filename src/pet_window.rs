@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     sync::OnceLock,
     time::{Duration, Instant},
 };
@@ -30,7 +31,7 @@ use crate::{
     app_state::{PetPosition, save_pet_position},
     asset::{CharacterAnimations, PreparedAnimation, PreparedFrame},
     i18n::Language,
-    render::{LayeredRenderer, PixelSurface, SurfacePoint},
+    render::{CachedSurface, LayeredRenderer, PixelSurface, SurfacePoint},
     speech_bubble_window::SpeechBubbleController,
 };
 
@@ -56,7 +57,7 @@ const PET_MENU_SETTINGS: usize = 4;
 const PET_MENU_ABOUT: usize = 5;
 const HIDE_ANIMATION_DURATION_MS: u128 = 180;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum ActiveClip {
     Idle,
     Walk,
@@ -66,6 +67,7 @@ enum ActiveClip {
 struct PetWindowState {
     renderer: LayeredRenderer,
     surface: PixelSurface,
+    scaled_frames: HashMap<(ActiveClip, u32), CachedSurface>,
     dpi: u32,
     position: (i32, i32),
     idle: PreparedAnimation,
@@ -183,6 +185,7 @@ impl PetWindow {
             PetWindowState {
                 renderer,
                 surface,
+                scaled_frames: HashMap::new(),
                 dpi,
                 position,
                 idle: animations.idle,
@@ -275,6 +278,7 @@ impl PetWindow {
         state.player.play(Instant::now());
         state.last_frame = None;
         state.surface = surface;
+        state.scaled_frames.clear();
         let position = state.position;
         set_position(self.hwnd, state, position)?;
         update_frame(state)
@@ -888,11 +892,26 @@ fn update_frame_at(state: &mut PetWindowState, now: Instant) -> Result<()> {
         ActiveClip::Jump => &state.jump.frames,
     };
     let frame = frames.get(selection.frame.id as usize).ok_or_else(Error::from_win32)?;
-    state.surface.clear();
-    state
-        .surface
-        .draw_scaled_frame(frame)
-        .map_err(|_| Error::from_win32())?;
+    if let Some(surface) = state.scaled_frames.get(&frame_key) {
+        surface.restore(&mut state.surface).map_err(|_| Error::from_win32())?;
+    } else {
+        state.surface.clear();
+        state
+            .surface
+            .draw_scaled_frame(frame)
+            .map_err(|_| Error::from_win32())?;
+        // Resample each immutable character frame once per DPI, rather than
+        // repeating bilinear scaling every time the animation loops.
+        // Jump is a one-shot entrance, so retaining all its frames would spend
+        // memory without saving work during the looping reminder.
+        if state.active_clip != ActiveClip::Jump
+            && (state.surface.width(), state.surface.height()) != (frame.width, frame.height)
+        {
+            state
+                .scaled_frames
+                .insert(frame_key, CachedSurface::new(&state.surface));
+        }
+    }
     state.renderer.submit(
         &state.surface,
         SurfacePoint {
@@ -919,6 +938,7 @@ fn apply_pet_dpi(state: &mut PetWindowState, dpi: u32, position: (i32, i32)) -> 
     let surface = pet_surface(&state.idle.frames[0], dpi)?;
     state.dpi = dpi.max(96);
     state.surface = surface;
+    state.scaled_frames.clear();
     state.position = position;
     state.last_frame = None;
     // Rebase an active drag so the next mouse message does not undo the suggested position.
@@ -941,6 +961,152 @@ mod tests {
     use windows::Win32::Foundation::RECT;
 
     use super::{clamp_drag_position, clamp_position, hide_target_y, movement_exceeded};
+
+    #[test]
+    fn scaled_animation_cache_preserves_pixels_across_dpi_and_character_changes() {
+        use super::*;
+        use crate::animation::{AnimationClip, Frame, LoopMode};
+
+        let pet = hidden_test_pet();
+        let state = state_mut(pet.hwnd).unwrap();
+        let template = CharacterAnimations {
+            idle: state.idle.clone(),
+            walk: state.walk.clone(),
+            jump: state.jump.clone(),
+        };
+        let characters: Vec<_> = [40, 160]
+            .into_iter()
+            .map(|color| {
+                let mut animations = template.clone();
+                for animation in [&mut animations.idle, &mut animations.walk] {
+                    let mut frame = animation.frames[0].clone();
+                    for pixel in frame.pixels.chunks_exact_mut(4).filter(|pixel| pixel[3] != 0) {
+                        pixel[0] = color;
+                    }
+                    let mut second = frame.clone();
+                    second.pixels[7] = 0;
+                    second.pixels[4..7].fill(0);
+                    animation.frames = vec![frame, second];
+                    animation.clip = AnimationClip::new(
+                        vec![Frame { id: 0 }, Frame { id: 1 }],
+                        Duration::from_millis(120),
+                        LoopMode::Loop,
+                    )
+                    .unwrap();
+                }
+                animations
+            })
+            .collect();
+        for dpi in [144, 192, 144, 96] {
+            for (character, animations) in characters.iter().enumerate() {
+                pet.set_animations(animations.clone()).unwrap();
+                let state = state_mut(pet.hwnd).unwrap();
+                let current_frame = &state.walk.frames[state.last_frame.unwrap().1 as usize];
+                let mut expected = pet_surface(current_frame, state.dpi).unwrap();
+                expected.draw_scaled_frame(current_frame).unwrap();
+                assert_eq!(
+                    state.surface, expected,
+                    "character switch must discard previous cached pixels"
+                );
+                apply_pet_dpi(state, dpi, (100, 400)).unwrap();
+                for clip in [ActiveClip::Walk, ActiveClip::Idle] {
+                    let now = Instant::now();
+                    start_clip(state, clip, now);
+                    for index in 0..20 {
+                        let time = now + Duration::from_millis(index * 120);
+                        update_frame_at(state, time).unwrap();
+                        let frame_id = state.last_frame.unwrap().1 as usize;
+                        let animation = if clip == ActiveClip::Walk {
+                            &state.walk
+                        } else {
+                            &state.idle
+                        };
+                        let mut expected = pet_surface(&animation.frames[frame_id], dpi).unwrap();
+                        expected.draw_scaled_frame(&animation.frames[frame_id]).unwrap();
+                        assert_eq!(
+                            state.surface, expected,
+                            "{character} {clip:?} dpi={dpi} frame={frame_id}"
+                        );
+                    }
+                }
+                if dpi == 96 {
+                    assert!(state.scaled_frames.is_empty(), "native-size frames need no extra cache");
+                }
+            }
+        }
+        unsafe { DestroyWindow(pet.hwnd).unwrap() };
+    }
+
+    #[test]
+    #[ignore = "CPU benchmark; run explicitly on an otherwise idle machine"]
+    fn visible_pet_render_cpu_budget() {
+        use super::*;
+        use crate::{asset::load_character_catalog, ui::gdi_plus::GdiPlus};
+        use windows::Win32::{
+            Foundation::FILETIME,
+            System::{
+                LibraryLoader::GetModuleHandleW,
+                Threading::{GetCurrentThread, GetThreadTimes},
+            },
+        };
+
+        fn cpu_ms() -> f64 {
+            let mut creation = FILETIME::default();
+            let mut exit = FILETIME::default();
+            let mut kernel = FILETIME::default();
+            let mut user = FILETIME::default();
+            unsafe { GetThreadTimes(GetCurrentThread(), &mut creation, &mut exit, &mut kernel, &mut user).unwrap() };
+            let ticks = |time: FILETIME| (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime);
+            (ticks(kernel) + ticks(user)) as f64 / 10_000.0
+        }
+
+        let gdi_plus = GdiPlus::new().unwrap();
+        let catalog = load_character_catalog(&gdi_plus).unwrap();
+        let instance: HINSTANCE = unsafe { GetModuleHandleW(None) }.unwrap().into();
+        let pet = PetWindow::create(
+            instance,
+            HWND::default(),
+            catalog.get("cat").unwrap().clone(),
+            Language::English,
+            None,
+            "Settings",
+        )
+        .unwrap();
+        pet.show_reminder().unwrap();
+        let mut costs = Vec::new();
+        for dpi in [96, 144, 192] {
+            let state = state_mut(pet.hwnd).unwrap();
+            apply_pet_dpi(state, dpi, (100, 400)).unwrap();
+            state.show_animation = None;
+            let now = Instant::now();
+            start_clip(state, ActiveClip::Walk, now);
+            // Measure steady looping after every frame has appeared once.
+            for index in 0..10 {
+                update_frame_at(state, now + Duration::from_millis(index * 100)).unwrap();
+            }
+            let before = cpu_ms();
+            for index in 10..70 {
+                update_frame_at(state, now + Duration::from_millis(index * 100)).unwrap();
+            }
+            let render_ms = cpu_ms() - before;
+            let cache_bytes: usize = state.scaled_frames.values().map(CachedSurface::byte_len).sum();
+            state.speech_bubble.start(now, Duration::ZERO);
+            let before = cpu_ms();
+            for _ in 0..360 {
+                update_speech_bubble(pet.hwnd, state).unwrap();
+            }
+            let bubble_ms = cpu_ms() - before;
+            eprintln!(
+                "dpi={dpi}: 60 animation frames CPU={render_ms:.3} ms; 360 unchanged bubble updates CPU={bubble_ms:.3} ms; frame cache={cache_bytes} bytes"
+            );
+            costs.push(render_ms);
+        }
+        unsafe { DestroyWindow(pet.hwnd).unwrap() };
+        assert!(
+            costs.iter().all(|cost| *cost <= 100.0),
+            "steady animation budget: <=100 ms CPU per 60 frames; measured {costs:?}"
+        );
+    }
 
     #[test]
     fn hidden_pet_has_no_animation_timer_work() {
@@ -1116,6 +1282,7 @@ mod tests {
                 PetWindowState {
                     renderer: LayeredRenderer::new(hwnd).unwrap(),
                     surface: pet_surface(&frame, 96).unwrap(),
+                    scaled_frames: HashMap::new(),
                     dpi: 96,
                     position: (100, 100),
                     idle: animation.clone(),
