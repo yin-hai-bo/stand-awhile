@@ -12,7 +12,10 @@ fn main() {
     embed_pet_frames();
 
     if cfg!(target_os = "windows") {
-        let _ = embed_resource::compile("app.rc", embed_resource::NONE);
+        write_version_header();
+        embed_resource::compile("app.rc", embed_resource::NONE)
+            .manifest_required()
+            .expect("could not compile required Windows resources");
     }
 
     let has_git = git_is_available() && git_work_tree().is_some();
@@ -27,6 +30,25 @@ fn main() {
     }
 
     println!("cargo:rustc-env=BUILD_COMMIT={commit}");
+}
+
+fn write_version_header() {
+    // VERSIONINFO stores each numeric component in a 16-bit word.
+    let version_word = |name: &str| {
+        env::var(name)
+            .expect("Cargo package version is required")
+            .parse::<u16>()
+            .expect("Windows version components must fit in 16 bits")
+    };
+    let major = version_word("CARGO_PKG_VERSION_MAJOR");
+    let minor = version_word("CARGO_PKG_VERSION_MINOR");
+    let patch = version_word("CARGO_PKG_VERSION_PATCH");
+    let version = env::var("CARGO_PKG_VERSION").expect("Cargo package version is required");
+    let header =
+        format!("#define APP_VERSION_WORDS {major},{minor},{patch},0\n#define APP_VERSION_STRING \"{version}\"\n");
+    // embed-resource adds OUT_DIR to the resource compiler's include path.
+    fs::write(Path::new(&env::var("OUT_DIR").unwrap()).join("app_version.h"), header)
+        .expect("could not write Windows version definitions");
 }
 
 fn embed_pet_frames() {
