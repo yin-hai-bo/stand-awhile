@@ -14,12 +14,12 @@ use windows::{
         UI::WindowsAndMessaging::{
             AppendMenuW, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
             DestroyMenu, DestroyWindow, GWLP_USERDATA, GetCursorPos, GetWindowLongPtrW, GetWindowRect, HTCLIENT,
-            HTTRANSPARENT, HWND_TOPMOST, IDC_ARROW, KillTimer, LoadCursorW, MF_SEPARATOR, MF_STRING, RegisterClassExW,
-            SPI_GETWORKAREA, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE, SetTimer,
-            SetWindowLongPtrW, SetWindowPos, ShowWindow, SystemParametersInfoW, TPM_LEFTALIGN, TPM_RETURNCMD,
-            TPM_RIGHTBUTTON, TrackPopupMenuEx, WM_APP, WM_CAPTURECHANGED, WM_DPICHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP,
-            WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED,
-            WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+            HTTRANSPARENT, HWND_TOPMOST, IDC_ARROW, IsWindowVisible, KillTimer, LoadCursorW, MF_SEPARATOR, MF_STRING,
+            RegisterClassExW, SPI_GETWORKAREA, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOOWNERZORDER,
+            SWP_NOSIZE, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, SystemParametersInfoW, TPM_LEFTALIGN,
+            TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenuEx, WM_APP, WM_CAPTURECHANGED, WM_DPICHANGED, WM_LBUTTONDOWN,
+            WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST, WM_RBUTTONUP, WM_SHOWWINDOW, WM_TIMER,
+            WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
         },
     },
     core::{Error, PCWSTR, Result, w},
@@ -208,9 +208,6 @@ impl PetWindow {
         state_mut(pet.hwnd).ok_or_else(Error::from_win32)?.player.play(now);
         let state = state_mut(pet.hwnd).ok_or_else(Error::from_win32)?;
         update_frame(state)?;
-        unsafe {
-            let _ = SetTimer(Some(pet.hwnd), PET_TIMER_ID, PET_TIMER_INTERVAL_MS, None);
-        }
         Ok(pet)
     }
 
@@ -490,9 +487,27 @@ unsafe extern "system" fn pet_window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
             }
             LRESULT(1)
         }
+        WM_SHOWWINDOW => {
+            // The animation timer belongs to the visible pet, not the countdown.
+            unsafe {
+                if wparam.0 != 0 {
+                    let _ = SetTimer(Some(hwnd), PET_TIMER_ID, PET_TIMER_INTERVAL_MS, None);
+                } else {
+                    let _ = KillTimer(Some(hwnd), PET_TIMER_ID);
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+        }
         WM_TIMER if wparam.0 == PET_TIMER_ID => {
+            // KillTimer leaves already queued messages in the queue.
+            if !unsafe { IsWindowVisible(hwnd).as_bool() } {
+                return LRESULT(0);
+            }
             if let Some(state) = state_mut(hwnd) {
                 let _ = update_hide_animation(hwnd, state);
+                if !unsafe { IsWindowVisible(hwnd).as_bool() } {
+                    return LRESULT(0);
+                }
                 let _ = update_show_animation(hwnd, state, Instant::now());
                 let _ = update_speech_bubble(hwnd, state);
                 let _ = update_frame(state);
@@ -926,6 +941,97 @@ mod tests {
     use windows::Win32::Foundation::RECT;
 
     use super::{clamp_drag_position, clamp_position, hide_target_y, movement_exceeded};
+
+    #[test]
+    fn hidden_pet_has_no_animation_timer_work() {
+        use super::*;
+        use crate::{asset::load_character_catalog, ui::gdi_plus::GdiPlus};
+        use windows::Win32::{
+            System::LibraryLoader::GetModuleHandleW,
+            UI::WindowsAndMessaging::{DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, SendMessageW},
+        };
+
+        fn pump_pet_timers(hwnd: HWND) -> usize {
+            fn thread_cpu_ticks() -> u64 {
+                use windows::Win32::{
+                    Foundation::FILETIME,
+                    System::Threading::{GetCurrentThread, GetThreadTimes},
+                };
+                let mut creation = FILETIME::default();
+                let mut exit = FILETIME::default();
+                let mut kernel = FILETIME::default();
+                let mut user = FILETIME::default();
+                unsafe {
+                    GetThreadTimes(GetCurrentThread(), &mut creation, &mut exit, &mut kernel, &mut user).unwrap()
+                };
+                let ticks = |time: FILETIME| (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime);
+                ticks(kernel) + ticks(user)
+            }
+
+            let cpu_before = thread_cpu_ticks();
+            let start = Instant::now();
+            let mut count = 0;
+            while start.elapsed() < Duration::from_millis(250) {
+                let mut message = MSG::default();
+                while unsafe { PeekMessageW(&mut message, Some(hwnd), WM_TIMER, WM_TIMER, PM_REMOVE).as_bool() } {
+                    count += 1;
+                    unsafe { DispatchMessageW(&message) };
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            eprintln!(
+                "{} timer callbacks / {} ms wall time / {:.3} ms thread CPU",
+                count,
+                start.elapsed().as_millis(),
+                (thread_cpu_ticks() - cpu_before) as f64 / 10_000.0
+            );
+            count
+        }
+
+        let gdi_plus = GdiPlus::new().unwrap();
+        let catalog = load_character_catalog(&gdi_plus).unwrap();
+        let instance: HINSTANCE = unsafe { GetModuleHandleW(None) }.unwrap().into();
+        let pet = PetWindow::create(
+            instance,
+            HWND::default(),
+            catalog.get("cat").unwrap().clone(),
+            Language::English,
+            None,
+            "Settings",
+        )
+        .unwrap();
+        let startup_ticks = pump_pet_timers(pet.hwnd);
+        pet.show_reminder().unwrap();
+        let visible_ticks = pump_pet_timers(pet.hwnd);
+        pet.hide();
+        // KillTimer cannot remove WM_TIMER messages already queued.
+        state_mut(pet.hwnd).unwrap().last_frame = None;
+        unsafe { SendMessageW(pet.hwnd, WM_TIMER, Some(WPARAM(PET_TIMER_ID)), None) };
+        let stale_tick_rendered = state_mut(pet.hwnd).unwrap().last_frame.is_some();
+        let hidden_ticks = pump_pet_timers(pet.hwnd);
+        pet.show_reminder().unwrap();
+        let resumed_ticks = pump_pet_timers(pet.hwnd);
+        pet.hide_animated().unwrap();
+        let exit_ticks = pump_pet_timers(pet.hwnd);
+        let exit_hidden = !unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(pet.hwnd).as_bool() };
+        let after_exit_ticks = pump_pet_timers(pet.hwnd);
+        unsafe { DestroyWindow(pet.hwnd).unwrap() };
+
+        eprintln!(
+            "pet timer callbacks: startup={startup_ticks}, visible={visible_ticks}, hidden={hidden_ticks}, resumed={resumed_ticks}, exit={exit_ticks}, after_exit={after_exit_ticks}"
+        );
+        assert_eq!(startup_ticks, 0, "hidden startup must not animate or render");
+        assert!(visible_ticks > 0, "visible reminder must animate");
+        assert!(
+            !stale_tick_rendered,
+            "queued timer messages must not render a hidden pet"
+        );
+        assert_eq!(hidden_ticks, 0, "immediate hide must stop animation timer");
+        assert!(resumed_ticks > 0, "showing again must restart animation timer");
+        assert!(exit_ticks > 0, "exit animation must run until hidden");
+        assert!(exit_hidden);
+        assert_eq!(after_exit_ticks, 0, "completed exit must stop animation timer");
+    }
 
     #[test]
     fn pet_replaces_wait_cursor_with_arrow() {

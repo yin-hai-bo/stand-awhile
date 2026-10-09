@@ -21,8 +21,10 @@ window messages, animation updates, and rendering run on the main thread.
 | `timer_panel.rs`, `tray_icon.rs`, `about.rs`, `ui/` | Countdown display, tray controls, About, Win32 controls and drawing |
 
 The main countdown uses a one-second Win32 timer to decrement its remaining
-seconds. Pet animation uses a 16 ms window timer to schedule updates and
-`Instant` to select frames. There is no asset worker or GPU renderer.
+seconds. Pet animation uses a 16 ms window timer only while the Pet window
+is visible, including its entrance and exit animations, and `Instant` to
+select frames. Hiding the Pet stops that timer; queued timer messages do
+not update or render a hidden Pet. There is no asset worker or GPU renderer.
 
 The countdown intentionally accepts occasional delays of a few seconds to
 ten or more seconds; exact wall-clock timing is not required. See
