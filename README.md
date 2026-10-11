@@ -197,9 +197,20 @@ For development checks, run:
 
 ```powershell
 cargo fmt -- --check
-cargo test -- --test-threads=1
+cargo test
 cargo build
 ```
+
+Tests run sequentially by default through `RUST_TEST_THREADS=1` in
+[`.cargo/config.toml`](.cargo/config.toml). Some Win32 tests share the process-wide
+GDI+ instance and desktop focus; running them in parallel can cause initialization
+failures or interfere with foreground-window assertions. The setting overrides
+an existing `RUST_TEST_THREADS` environment variable. Run Cargo from this project
+directory so it picks up the configuration.
+
+For filtered pure logic tests, you can explicitly override the thread count, for
+example `cargo test countdown::tests -- --test-threads=4`. Keep the full suite and
+Win32 tests sequential. `cargo test -- --test-threads=1` also remains valid.
 
 See [Pet verification](docs/desktop-pet-verification.md) for Windows smoke checks
 and [Project context](CONTEXT.md) for the implementation's module boundaries.

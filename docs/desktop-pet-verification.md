@@ -96,9 +96,15 @@ Pet 退出动画结束后销毁窗口，释放动画帧、缩放缓存和渲染�
 
 ```powershell
 cargo fmt -- --check
-cargo test -- --test-threads=1
+cargo test
 cargo build
 ```
+
+仓库的 `.cargo/config.toml` 设置 `RUST_TEST_THREADS=1`，因此直接执行
+`cargo test` 会按单线程顺序运行测试，并覆盖外部同名环境变量。窗口测试
+共享进程内 GDI+ 实例和桌面焦点，并行运行可能导致初始化失败或焦点断言失败。
+完整测试保持串行；仅运行纯逻辑测试时可显式指定线程数，例如
+`cargo test countdown::tests -- --test-threads=4`。
 
 发布构建使用 `cargo build --release`，但 `build.rs` 要求 Git 工作区干净。
 

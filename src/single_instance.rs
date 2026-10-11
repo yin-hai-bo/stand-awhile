@@ -123,7 +123,8 @@ mod tests {
         };
         let name: Vec<u16> = name.encode_utf16().chain([0]).collect();
         let _instance = SingleInstance::acquire_named(PCWSTR(name.as_ptr())).unwrap().unwrap();
-        println!("INSTANCE_READY");
+        // The single-threaded test harness prints the test name without a newline.
+        println!("\nINSTANCE_READY");
         std::io::stdout().flush().unwrap();
         let mut input = String::new();
         std::io::stdin().read_line(&mut input).unwrap();
