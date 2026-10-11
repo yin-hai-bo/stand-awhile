@@ -33,6 +33,11 @@ The main countdown uses a one-second Win32 timer to decrement its remaining
 seconds. Its state and remaining seconds live in `WindowState.countdown`, without
 a global timer-state mutex or remaining-seconds atomic. A startup-only atomic
 provides the initial display value before the window state is attached.
+Main-window reads return owned snapshots, and mutations use short closures that
+do not call window APIs. Pet, GDI+, and component snapshots share ownership with
+`Rc`, so synchronous callbacks can release the attached state without invalidating
+an operation in progress. No animation pixel buffers are cloned. `WM_NCDESTROY`
+clears the attached pointer before dropping state and its resources.
 Pet animation uses a 16 ms window timer only while the Pet window
 is visible, including its entrance and exit animations, and `Instant` to
 select frames. Hiding the Pet stops that timer; queued timer messages do

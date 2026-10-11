@@ -23,6 +23,7 @@ pub const TRAY_MENU_EXIT_ID: usize = 41003;
 pub const TRAY_MENU_START_ID: usize = 41004;
 pub const TRAY_MENU_SETTINGS_ID: usize = 41005;
 
+#[derive(Clone)]
 pub struct TrayIcon {
     taskbar_created_message: u32,
     icon: HICON,

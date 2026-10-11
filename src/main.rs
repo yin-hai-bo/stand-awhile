@@ -167,7 +167,7 @@ fn run() -> Result<()> {
             tray_icon,
             tray_when_close: config.tray_when_close,
             pet_window: None,
-            gdi_plus,
+            gdi_plus: gdi_plus.into(),
             character: config.character,
             pet_position: app_state.pet_position,
             components: Vec::new(),

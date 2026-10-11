@@ -1,4 +1,7 @@
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::{
+    rc::Rc,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 use crate::about::show_about_window;
 use crate::app_state::PetPosition;
@@ -55,6 +58,7 @@ pub const TIMER_ID: usize = 1;
 const DEFAULT_INITIAL_REMAINING_SECONDS: u32 = 20 * 60;
 const AUTO_HIDE_CHECKBOX_ID: usize = 3;
 
+#[derive(Clone)]
 pub struct WindowState {
     pub countdown: Countdown,
     pub auto_hide_on_start: bool,
@@ -63,11 +67,11 @@ pub struct WindowState {
     pub theme: Theme,
     pub tray_icon: TrayIcon,
     pub tray_when_close: bool,
-    pub pet_window: Option<PetWindow>,
-    pub gdi_plus: GdiPlus,
+    pub pet_window: Option<Rc<PetWindow>>,
+    pub gdi_plus: Rc<GdiPlus>,
     pub character: String,
     pub pet_position: Option<PetPosition>,
-    pub components: Vec<Box<dyn Component>>,
+    pub components: Vec<Rc<dyn Component>>,
     pub common_gui_font: Option<HFONT>,
     pub settings_button: HWND,
     pub settings_button_hovered: bool,
@@ -125,7 +129,7 @@ fn set_auto_hide_checked(checkbox: HWND, checked: bool) {
 }
 
 fn save_auto_hide_preference(hwnd: HWND) {
-    let Some(state) = window_state_mut(hwnd) else { return };
+    let Some(state) = window_state(hwnd) else { return };
     let checked =
         unsafe { SendMessageW(state.auto_hide_checkbox, BM_GETCHECK, None, None).0 == BST_CHECKED.0 as isize };
     let result = Config::load().and_then(|mut config| {
@@ -149,7 +153,9 @@ fn save_auto_hide_preference(hwnd: HWND) {
             );
         }
     } else {
-        state.auto_hide_on_start = checked;
+        with_window_state_mut(hwnd, |current| {
+            current.auto_hide_on_start = checked;
+        });
         update_settings_panel_auto_hide(state.settings_panel, checked);
     }
 }
@@ -159,11 +165,12 @@ pub fn set_initial_remaining_seconds(seconds: u32) {
 }
 
 fn apply_timer_period(hwnd: HWND, seconds: u32) {
-    let Some(state) = window_state_mut(hwnd) else { return };
-    let previous_remaining = state.countdown.displayed_remaining();
-    if !state.countdown.set_period(seconds) {
+    let Some(Some(previous_remaining)) = with_window_state_mut(hwnd, |state| {
+        let previous = state.countdown.displayed_remaining();
+        state.countdown.set_period(seconds).then_some(previous)
+    }) else {
         return;
-    }
+    };
     unsafe {
         invalidate_countdown(hwnd, previous_remaining);
         invalidate_countdown(hwnd, seconds);
@@ -202,15 +209,16 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
         }
         WM_TIMER => {
             if wparam.0 == TIMER_ID {
-                let Some(state) = window_state_mut(hwnd) else {
+                let Some(Some((previous_remaining, finished))) = with_window_state_mut(hwnd, |state| {
+                    if state.countdown.state() != TimerState::Running {
+                        return None;
+                    }
+                    let previous = state.countdown.remaining();
+                    Some((previous, state.countdown.tick()))
+                }) else {
                     return LRESULT(0);
                 };
-                if state.countdown.state() != TimerState::Running {
-                    return LRESULT(0);
-                }
-
-                let previous_remaining = state.countdown.remaining();
-                if state.countdown.tick() {
+                if finished {
                     stop_timer(hwnd);
                     show_pet_reminder(hwnd);
                 }
@@ -320,8 +328,12 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         WM_SETCURSOR => {
-            if let Some(state) = window_state_mut(hwnd) {
+            if let Some(mut state) = window_state(hwnd) {
                 let cursor_window = HWND(wparam.0 as _);
+                with_window_state_mut(hwnd, |current| {
+                    current.settings_button_hovered = cursor_window == state.settings_button;
+                    current.about_button_hovered = cursor_window == state.about_button;
+                });
                 for (button, hovered) in [
                     (state.settings_button, &mut state.settings_button_hovered),
                     (state.about_button, &mut state.about_button_hovered),
@@ -388,9 +400,8 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
             let chinese = window_state(hwnd)
                 .map(|state| state.language == crate::i18n::Language::Chinese)
                 .unwrap_or(false);
-            if let Some(state) = window_state_mut(hwnd) {
-                state.common_gui_font = common_gui_font(dpi, chinese);
-            }
+            let font = common_gui_font(dpi, chinese);
+            with_window_state_mut(hwnd, |state| state.common_gui_font = font);
             if let Some(state) = window_state(hwnd) {
                 update_settings_button_font(state.settings_button, state.common_gui_font);
                 update_settings_button_font(state.about_button, state.common_gui_font);
@@ -469,14 +480,17 @@ unsafe fn invalidate_countdown(hwnd: HWND, remaining_seconds: u32) {
 }
 
 fn activate_button(hwnd: HWND, button: ControlButton) {
-    let Some(state) = window_state_mut(hwnd) else { return };
-    let previous_remaining = state.countdown.remaining();
-    match button {
-        ControlButton::Play => state.countdown.start(),
-        ControlButton::Pause => state.countdown.pause(),
-        ControlButton::Reset => state.countdown.reset(),
-    }
-    let displayed_remaining = state.countdown.displayed_remaining();
+    let Some((previous_remaining, displayed_remaining)) = with_window_state_mut(hwnd, |state| {
+        let previous = state.countdown.remaining();
+        match button {
+            ControlButton::Play => state.countdown.start(),
+            ControlButton::Pause => state.countdown.pause(),
+            ControlButton::Reset => state.countdown.reset(),
+        }
+        (previous, state.countdown.displayed_remaining())
+    }) else {
+        return;
+    };
 
     match button {
         ControlButton::Play => {
@@ -507,13 +521,22 @@ fn activate_button(hwnd: HWND, button: ControlButton) {
 }
 
 fn sync_control_button_enabled(hwnd: HWND) -> windows::core::Result<()> {
-    let state = window_state_mut(hwnd).expect("window state missing");
+    let Some(state) = window_state(hwnd) else {
+        return Ok(());
+    };
     let (play, pause, reset) = state.countdown.buttons();
     update_control_buttons_for(&state.control_buttons, play, pause, reset);
-    state.tray_icon.update_tooltip(
+    let Some(mut state) = window_state(hwnd) else {
+        return Ok(());
+    };
+    let result = state.tray_icon.update_tooltip(
         hwnd,
         crate::i18n::tray_tooltip(state.language, state.countdown.state() == TimerState::Running),
-    )
+    );
+    with_window_state_mut(hwnd, |current| {
+        current.tray_icon = state.tray_icon;
+    });
+    result
 }
 
 fn start_timer(hwnd: HWND) {
@@ -549,7 +572,7 @@ fn show_pet_error(hwnd: HWND, error: &windows::core::Error) {
 }
 
 fn try_show_pet_reminder(hwnd: HWND) -> windows::core::Result<()> {
-    let Some(state) = window_state_mut(hwnd) else {
+    let Some(state) = window_state(hwnd) else {
         return Ok(());
     };
     if state.pet_window.is_none() {
@@ -567,30 +590,39 @@ fn try_show_pet_reminder(hwnd: HWND) -> windows::core::Result<()> {
         )?;
         pet.set_language(state.language);
         pet.show_reminder()?;
-        state.pet_window = Some(pet);
+        let pet = Rc::new(pet);
+        let previous = with_window_state_mut(hwnd, |current| current.pet_window.replace(pet.clone()));
+        drop(previous);
         return Ok(());
     }
     state.pet_window.as_ref().unwrap().show_reminder()
 }
 
 fn release_hidden_pet(hwnd: HWND, pet_hwnd: HWND) {
-    let Some(state) = window_state_mut(hwnd) else { return };
+    let Some(state) = window_state(hwnd) else { return };
     if let Some(pet) = state.pet_window.as_ref() {
         if pet.hwnd() != pet_hwnd || unsafe { IsWindowVisible(pet_hwnd).as_bool() } {
             return;
         }
-        if let Ok(position) = pet.position() {
-            state.pet_position = Some(position);
-        }
-        state.pet_window = None;
+        let position = pet.position().ok();
+        let released = with_window_state_mut(hwnd, |current| {
+            if let Some(position) = position {
+                current.pet_position = Some(position);
+            }
+            current.pet_window.take()
+        });
+        drop(released);
     }
 }
 
 fn acknowledge_pet(hwnd: HWND) {
-    let Some(state) = window_state_mut(hwnd) else { return };
-    let previous_remaining = state.countdown.remaining();
-    state.countdown.restart();
-    let displayed_remaining = state.countdown.displayed_remaining();
+    let Some((previous_remaining, displayed_remaining)) = with_window_state_mut(hwnd, |state| {
+        let previous = state.countdown.remaining();
+        state.countdown.restart();
+        (previous, state.countdown.displayed_remaining())
+    }) else {
+        return;
+    };
     start_timer(hwnd);
     unsafe {
         invalidate_countdown(hwnd, previous_remaining);
@@ -600,12 +632,10 @@ fn acknowledge_pet(hwnd: HWND) {
 }
 
 fn hide_pet(hwnd: HWND) {
-    let pet_hwnd = window_state(hwnd)
-        .and_then(|state| state.pet_window.as_ref())
-        .map(|pet| {
-            pet.hide();
-            pet.hwnd()
-        });
+    let pet_hwnd = window_state(hwnd).and_then(|state| state.pet_window).map(|pet| {
+        pet.hide();
+        pet.hwnd()
+    });
     if let Some(pet_hwnd) = pet_hwnd {
         release_hidden_pet(hwnd, pet_hwnd);
     }
@@ -623,7 +653,7 @@ fn hide_pet_animated(hwnd: HWND) -> windows::core::Result<()> {
     let Some(state) = window_state(hwnd) else {
         return Ok(());
     };
-    state.pet_window.as_ref().map_or(Ok(()), PetWindow::hide_animated)
+    state.pet_window.as_ref().map_or(Ok(()), |pet| pet.hide_animated())
 }
 
 fn initial_remaining_seconds() -> u32 {
@@ -744,23 +774,25 @@ fn refresh_window_state(hwnd: HWND) {
     }
 }
 
-pub(crate) fn window_state(hwnd: HWND) -> Option<&'static WindowState> {
+// Return owned data: callbacks may mutate or destroy the attached state.
+pub(crate) fn window_state(hwnd: HWND) -> Option<WindowState> {
     let raw = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const WindowState;
-    unsafe { raw.as_ref() }
+    unsafe { raw.as_ref().cloned() }
 }
 
-fn window_state_mut(hwnd: HWND) -> Option<&'static mut WindowState> {
+// Only change local data here; never send messages, pump messages, or drop windows.
+fn with_window_state_mut<R>(hwnd: HWND, update: impl FnOnce(&mut WindowState) -> R) -> Option<R> {
     let raw = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut WindowState;
-    unsafe { raw.as_mut() }
+    unsafe { raw.as_mut().map(update) }
 }
 
 fn release_window_state(hwnd: HWND) {
     let raw = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
     if raw != 0 {
-        let _ = unsafe { Box::from_raw(raw as *mut WindowState) };
         unsafe {
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
         }
+        drop(unsafe { Box::from_raw(raw as *mut WindowState) });
     }
 }
 
@@ -825,8 +857,8 @@ fn open_settings(hwnd: HWND) {
         .unwrap_or_default()
         .into();
     if let Ok(panel) = create_settings_panel(hwnd, instance, config, font) {
-        if let Some(state) = window_state_mut(hwnd) {
-            state.settings_panel = panel;
+        with_window_state_mut(hwnd, |state| state.settings_panel = panel);
+        if let Some(state) = window_state(hwnd) {
             let _ = resize_settings_panel(panel, hwnd);
             unsafe {
                 let _ = SetWindowPos(
@@ -892,21 +924,23 @@ fn apply_saved_settings(hwnd: HWND) {
     apply_timer_period(hwnd, config.period);
     let language = config.language();
     let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
-    if let Some(state) = window_state_mut(hwnd) {
+    let font = common_gui_font(dpi, language == Language::Chinese);
+    with_window_state_mut(hwnd, |state| {
         state.language = language;
         state.auto_hide_on_start = config.auto_hide_on_start;
+        state.tray_when_close = config.tray_when_close;
+        state.theme = config.theme();
+        state.common_gui_font = font;
+    });
+    if let Some(mut state) = window_state(hwnd) {
         update_settings_panel_auto_hide(state.settings_panel, config.auto_hide_on_start);
         set_auto_hide_checked(state.auto_hide_checkbox, config.auto_hide_on_start);
         set_settings_button_text(state.auto_hide_checkbox, crate::i18n::auto_hide_text(language));
         unsafe {
             let _ = InvalidateRect(Some(state.timer_panel), None, false);
         }
-        state.tray_when_close = config.tray_when_close;
-        state.theme = config.theme();
         refresh_theme(hwnd, state.theme);
         refresh_settings_panel_theme(state.settings_panel, &config);
-        let font = common_gui_font(dpi, language == Language::Chinese);
-        state.common_gui_font = font;
         let _ = state.tray_icon.update_language(
             hwnd,
             crate::i18n::tray_tooltip(language, state.countdown.state() == TimerState::Running),
@@ -916,6 +950,9 @@ fn apply_saved_settings(hwnd: HWND) {
             crate::tray_menu_about_text(language),
             crate::tray_menu_exit_text(language),
         );
+        with_window_state_mut(hwnd, |current| {
+            current.tray_icon = state.tray_icon.clone();
+        });
         if let Some(pet) = state.pet_window.as_ref() {
             pet.set_language(language);
         }
@@ -933,17 +970,21 @@ fn apply_saved_settings(hwnd: HWND) {
         update_settings_button_font(state.auto_hide_checkbox, font);
         set_settings_button_text(state.about_button, crate::about_button_text(language));
     }
-    let result = window_state_mut(hwnd).map(|state| {
+    let result = window_state(hwnd).map(|mut state| {
         change_character(
             &mut state.character,
-            state.pet_window.as_ref(),
+            state.pet_window.as_deref(),
             &config.character,
             || {
                 load_character(&config.character, &state.gdi_plus).map_err(|error| {
                     windows::core::Error::new(windows::core::HRESULT(0x8000_4005u32 as i32), error.to_string())
                 })
             },
-        )
+        )?;
+        with_window_state_mut(hwnd, |current| {
+            current.character = state.character;
+        });
+        Ok::<_, windows::core::Error>(())
     });
     if let Some(Err(error)) = result {
         show_pet_error(hwnd, &error);
@@ -988,6 +1029,85 @@ fn settings_back_text(language: Language) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn layout_can_reenter_and_destroy_main_window_before_snapshot_is_released() {
+        use std::cell::Cell;
+        use windows::Win32::{
+            System::LibraryLoader::GetModuleHandleW,
+            UI::WindowsAndMessaging::{PM_REMOVE, PeekMessageW, RegisterClassW, WM_QUIT, WNDCLASSW},
+        };
+
+        struct ReentrantComponent {
+            hwnd: HWND,
+            dropped: Rc<Cell<bool>>,
+        }
+        impl Component for ReentrantComponent {
+            fn layout(&self, parent: HWND, _: HDC) -> windows::core::Result<()> {
+                unsafe {
+                    SendMessageW(parent, WM_TIMER, Some(WPARAM(TIMER_ID)), None);
+                }
+                assert_eq!(remaining_seconds(parent), 2);
+                unsafe {
+                    DestroyWindow(parent)?;
+                }
+                assert!(window_state(parent).is_none());
+                assert!(!self.dropped.get());
+                Ok(())
+            }
+            fn invalidate(&self) {}
+        }
+        impl Drop for ReentrantComponent {
+            fn drop(&mut self) {
+                assert_eq!(unsafe { GetWindowLongPtrW(self.hwnd, GWLP_USERDATA) }, 0);
+                self.dropped.set(true);
+            }
+        }
+
+        unsafe {
+            let instance: HINSTANCE = GetModuleHandleW(None).unwrap().into();
+            let class = WNDCLASSW {
+                lpfnWndProc: Some(window_proc),
+                hInstance: instance,
+                lpszClassName: windows::core::w!("StandAwhileMainStateReentrancyTest"),
+                ..Default::default()
+            };
+            assert_ne!(RegisterClassW(&class), 0);
+            let hwnd = CreateWindowExW(
+                Default::default(),
+                class.lpszClassName,
+                windows::core::w!(""),
+                Default::default(),
+                -10000,
+                -10000,
+                100,
+                100,
+                None,
+                None,
+                Some(instance),
+                None,
+            )
+            .unwrap();
+            let mut countdown = Countdown::new(3);
+            countdown.start();
+            attach_test_state(hwnd, instance, countdown, false);
+            let dropped = Rc::new(Cell::new(false));
+            with_window_state_mut(hwnd, |state| {
+                state.components.push(Rc::new(ReentrantComponent {
+                    hwnd,
+                    dropped: dropped.clone(),
+                }));
+            })
+            .unwrap();
+            layout_window_state(hwnd).unwrap();
+            assert!(dropped.get());
+            assert!(!IsWindow(Some(hwnd)).as_bool());
+            assert!(window_state(hwnd).is_none());
+            let mut message = MSG::default();
+            let _ = PeekMessageW(&mut message, None, WM_QUIT, WM_QUIT, PM_REMOVE);
+        }
+    }
+
     fn attach_test_state(hwnd: HWND, instance: HINSTANCE, countdown: Countdown, auto_hide_on_start: bool) {
         use windows::Win32::UI::WindowsAndMessaging::{IDI_APPLICATION, LoadIconW};
         let tray_icon = TrayIcon::create(
@@ -1032,7 +1152,7 @@ mod tests {
                 tray_icon,
                 tray_when_close: true,
                 pet_window: None,
-                gdi_plus: GdiPlus::new().unwrap(),
+                gdi_plus: Rc::new(GdiPlus::new().unwrap()),
                 character: "cat".to_owned(),
                 pet_position: None,
                 components: Vec::new(),
@@ -1211,7 +1331,7 @@ mod tests {
                 assert!(!IsWindow(Some(pet_hwnd)).as_bool());
                 assert_eq!(window_state(hwnd).unwrap().pet_position.as_ref(), Some(&position));
                 // The next reminder decodes only the newly selected character.
-                window_state_mut(hwnd).unwrap().character = "dog".to_owned();
+                with_window_state_mut(hwnd, |state| state.character = "dog".to_owned()).unwrap();
                 try_show_pet_reminder(hwnd).unwrap();
                 let pet_hwnd = window_state(hwnd).unwrap().pet_window.as_ref().unwrap().test_hwnd();
                 assert!(IsWindowVisible(pet_hwnd).as_bool());
@@ -1283,7 +1403,7 @@ mod tests {
             attach_test_state(hwnd, instance, Countdown::new(1200), false);
             // Supply an isolated panel so restore commands never load the user's config.
             let panel = create_settings_panel(hwnd, instance, Config::default(), None).unwrap();
-            window_state_mut(hwnd).unwrap().settings_panel = panel;
+            with_window_state_mut(hwnd, |state| state.settings_panel = panel).unwrap();
             for (state, remaining) in [
                 (TimerState::Running, 731),
                 (TimerState::Paused, 412),
@@ -1297,7 +1417,7 @@ mod tests {
                 if state == TimerState::Paused {
                     countdown.pause();
                 }
-                window_state_mut(hwnd).unwrap().countdown = countdown;
+                with_window_state_mut(hwnd, |state| state.countdown = countdown).unwrap();
                 apply_timer_period(hwnd, 1200);
                 assert_eq!(window_state(hwnd).unwrap().countdown, countdown);
 
