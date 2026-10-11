@@ -57,6 +57,17 @@ until in-flight drawing or layout ends. A layout revision rejects stale work
 after synchronous callbacks; nested updates invalidate the position cache so
 the next update reapplies the current layout. Destruction clears the attached
 pointer before releasing state, including when the Pet owner destroys its bubble.
+About-window reads also return owned snapshots, with DPI state changes committed
+in a short closure. Its owned title font uses `Rc` to survive layout and font
+callbacks that close the dialog. DPI updates and layout check that the title-font
+owner still matches the snapshot before continuing. The modal loop checks window
+lifetime after callbacks, closes About before restoring the owner's enabled state,
+and preserves `WM_QUIT`. Its attached pointer is cleared before releasing state.
+About groups its localized app name, Cargo package version, description, project
+links, and animation credits; a flat separator precedes the credits. The version
+sits beside the title with their font baselines aligned using `tmAscent`. Its Win32 owner-drawn
+default OK button follows the theme, is anchored at the bottom right, and closes
+on click or Enter.
 Pet animation uses a 16 ms window timer only while the Pet window
 is visible, including its entrance and exit animations, and `Instant` to
 select frames. Hiding the Pet stops that timer; queued timer messages do
