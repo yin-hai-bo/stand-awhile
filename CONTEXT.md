@@ -45,6 +45,12 @@ keep an operation's resources alive through callbacks. Nested rendering waits
 for the next timer tick; pending bubble starts and language changes are retained.
 Pet destruction clears its attached pointer before dropping resources. Its owner
 still releases a hidden Pet asynchronously, rejecting stale hide notifications.
+Settings-window calls also use owned snapshots; local changes are committed in
+short closures before notifying the main window. Its brushes and owned title
+fonts use `Rc` so callbacks that close the panel cannot release resources still
+used by an operation. The attached pointer is cleared before close notification
+and cleanup. Ordinary setting changes preserve an unsaved minutes input; startup
+preference failures still roll back saved configuration even if the panel closes.
 Pet animation uses a 16 ms window timer only while the Pet window
 is visible, including its entrance and exit animations, and `Instant` to
 select frames. Hiding the Pet stops that timer; queued timer messages do

@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use std::{rc::Rc, sync::OnceLock};
 
 use windows::{
     Win32::{
@@ -63,6 +63,7 @@ const BASE_GRID_TOP: i32 = 56;
 const BASE_ROW_HEIGHT: i32 = 32;
 const BASE_ROW_GAP: i32 = 16;
 
+#[derive(Clone)]
 struct SettingsState {
     parent: HWND,
     embedded: bool,
@@ -79,23 +80,38 @@ struct SettingsState {
     reset_defaults: HWND,
     reset_defaults_hovered: bool,
     font: Option<HFONT>,
-    title_font: Option<HFONT>,
+    title_font: Option<Rc<SettingsFont>>,
     font_controls: Vec<HWND>,
     dark_mode: bool,
-    background_brush: HBRUSH,
-    control_brush: HBRUSH,
+    background_brush: Rc<SettingsBrush>,
+    control_brush: Rc<SettingsBrush>,
+    #[cfg(test)]
+    _lifetime: Rc<SettingsLifetime>,
 }
 
-impl Drop for SettingsState {
+struct SettingsBrush(HBRUSH);
+impl Drop for SettingsBrush {
     fn drop(&mut self) {
         unsafe {
-            let _ = DeleteObject(HGDIOBJ(self.background_brush.0));
-            let _ = DeleteObject(HGDIOBJ(self.control_brush.0));
-            if let Some(font) = self.title_font.take() {
-                let _ = DeleteObject(HGDIOBJ(font.0));
-            }
+            let _ = DeleteObject(HGDIOBJ(self.0.0));
         }
-        #[cfg(test)]
+    }
+}
+
+struct SettingsFont(HFONT);
+impl Drop for SettingsFont {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = DeleteObject(HGDIOBJ(self.0.0));
+        }
+    }
+}
+
+#[cfg(test)]
+struct SettingsLifetime;
+#[cfg(test)]
+impl Drop for SettingsLifetime {
+    fn drop(&mut self) {
         STATE_DROPS.with(|count| count.set(count.get() + 1));
     }
 }
@@ -127,8 +143,10 @@ pub fn create_settings_panel(parent: HWND, instance: HINSTANCE, config: Config, 
         title_font: None,
         font_controls: Vec::new(),
         dark_mode,
-        background_brush: HBRUSH::default(),
-        control_brush: HBRUSH::default(),
+        background_brush: Rc::new(SettingsBrush(HBRUSH::default())),
+        control_brush: Rc::new(SettingsBrush(HBRUSH::default())),
+        #[cfg(test)]
+        _lifetime: Rc::new(SettingsLifetime),
     });
     let mut state = Some(state);
     unsafe {
@@ -167,7 +185,7 @@ pub fn focus_settings_panel(hwnd: HWND) {
 }
 
 pub fn layout_settings_panel(hwnd: HWND, dpi: u32) {
-    let Some(state) = state_mut(hwnd) else {
+    let Some(state) = state_snapshot(hwnd) else {
         return;
     };
     let scale = |value: i32| value * dpi as i32 / 96;
@@ -179,16 +197,13 @@ pub fn layout_settings_panel(hwnd: HWND, dpi: u32) {
     let row_step = scale(BASE_ROW_HEIGHT + BASE_ROW_GAP);
     let grid_top = scale(BASE_GRID_TOP);
 
-    let labels = [
-        state.font_controls[0],
-        state.font_controls[1],
-        state.font_controls[2],
-        state.font_controls[3],
-        state.font_controls[4],
-        state.font_controls[5],
-        state.font_controls[6],
-    ];
-    for (index, label) in labels.into_iter().enumerate() {
+    for (index, label) in state
+        .font_controls
+        .iter()
+        .take(SETTINGS_TITLE_COUNT)
+        .copied()
+        .enumerate()
+    {
         let y = grid_top + index as i32 * row_step;
         move_control(label, title_x, y, title_width, row_height);
     }
@@ -332,25 +347,30 @@ unsafe extern "system" fn settings_window_proc(hwnd: HWND, msg: u32, wparam: WPA
             LRESULT(1)
         }
         WM_CREATE => {
-            if let Some(state) = state_mut(hwnd) {
-                create_controls(hwnd, state);
+            if let Some(mut state) = state_snapshot(hwnd) {
+                create_controls(hwnd, &mut state);
+                let previous = with_state(hwnd, |current| std::mem::replace(current, state.clone()));
+                if previous.is_none() {
+                    return LRESULT(-1);
+                }
+                drop(previous);
                 let _ = apply_window_dark_mode(hwnd, state.dark_mode);
             }
             LRESULT(0)
         }
         WM_NCACTIVATE => {
-            if let Some(state) = state_mut(hwnd) {
+            if let Some(state) = state_snapshot(hwnd) {
                 apply_window_caption_color(hwnd, state.dark_mode, wparam.0 != 0);
             }
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         WM_ERASEBKGND => {
-            if let Some(state) = state_mut(hwnd) {
+            if let Some(state) = state_snapshot(hwnd) {
                 let hdc = HDC(wparam.0 as _);
                 let mut rect = RECT::default();
                 unsafe {
                     let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rect);
-                    let _ = FillRect(hdc, &rect, state.background_brush);
+                    let _ = FillRect(hdc, &rect, state.background_brush.0);
                 }
                 draw_period_underline(hwnd, hdc, state.dark_mode);
                 return LRESULT(1);
@@ -358,20 +378,21 @@ unsafe extern "system" fn settings_window_proc(hwnd: HWND, msg: u32, wparam: WPA
             LRESULT(0)
         }
         WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT | WM_CTLCOLORBTN | WM_CTLCOLORLISTBOX => {
-            if let Some(state) = state_mut(hwnd) {
+            if let Some(state) = state_snapshot(hwnd) {
                 let hdc = HDC(wparam.0 as _);
                 let title = HWND(lparam.0 as _);
-                let text = if state.font_controls[..SETTINGS_TITLE_COUNT].contains(&title) {
-                    if state.dark_mode {
-                        COLORREF(0x0066D1FF)
+                let text =
+                    if state.font_controls[..state.font_controls.len().min(SETTINGS_TITLE_COUNT)].contains(&title) {
+                        if state.dark_mode {
+                            COLORREF(0x0066D1FF)
+                        } else {
+                            COLORREF(0x008E3A5B)
+                        }
+                    } else if state.dark_mode {
+                        COLORREF(0x00FAFAFA)
                     } else {
-                        COLORREF(0x008E3A5B)
-                    }
-                } else if state.dark_mode {
-                    COLORREF(0x00FAFAFA)
-                } else {
-                    COLORREF(0x00202020)
-                };
+                        COLORREF(0x00202020)
+                    };
                 let background = if state.dark_mode {
                     COLORREF(0x00202020)
                 } else {
@@ -381,12 +402,12 @@ unsafe extern "system" fn settings_window_proc(hwnd: HWND, msg: u32, wparam: WPA
                     let _ = SetTextColor(hdc, text);
                     let _ = SetBkColor(hdc, background);
                 }
-                return LRESULT(state.control_brush.0 as isize);
+                return LRESULT(state.control_brush.0.0 as isize);
             }
             LRESULT(0)
         }
         windows::Win32::UI::WindowsAndMessaging::WM_DRAWITEM => {
-            if let Some(state) = state_mut(hwnd) {
+            if let Some(state) = state_snapshot(hwnd) {
                 let item = unsafe { &*(lparam.0 as *const DRAWITEMSTRUCT) };
                 if item.CtlID as usize == RESET_DEFAULTS_ID {
                     draw_settings_button(item, state.dark_mode, state.reset_defaults_hovered, state.font);
@@ -399,14 +420,14 @@ unsafe extern "system" fn settings_window_proc(hwnd: HWND, msg: u32, wparam: WPA
             let id = (wparam.0 & 0xFFFF) as usize;
             let notification = ((wparam.0 >> 16) & 0xFFFF) as u32;
             if id == PERIOD_ID && notification == EN_CHANGE {
-                if let Some(state) = state_mut(hwnd)
+                if let Some(state) = state_snapshot(hwnd)
                     && !state.period.is_invalid()
                 {
-                    state.period_changed = true;
+                    with_state(hwnd, |current| current.period_changed = true);
                 }
             }
             if id == PERIOD_ID && notification == EN_KILLFOCUS {
-                if let Some(state) = state_mut(hwnd)
+                if let Some(state) = state_snapshot(hwnd)
                     && state.period_changed
                 {
                     normalize_period(state.period);
@@ -418,7 +439,7 @@ unsafe extern "system" fn settings_window_proc(hwnd: HWND, msg: u32, wparam: WPA
                         let result =
                             Config::load().and_then(|previous| reset_to_defaults(hwnd, previous, Config::save));
                         if let Err(error) = result {
-                            if let Some(state) = state_mut(hwnd) {
+                            if let Some(state) = state_snapshot(hwnd) {
                                 let message = match state.config.language() {
                                     crate::i18n::Language::Chinese => format!("重置为默认值失败。\n{error}"),
                                     crate::i18n::Language::English => format!("Could not reset to defaults.\n{error}"),
@@ -433,7 +454,7 @@ unsafe extern "system" fn settings_window_proc(hwnd: HWND, msg: u32, wparam: WPA
                                     );
                                 }
                             }
-                        } else if let Some(state) = state_mut(hwnd) {
+                        } else if let Some(state) = state_snapshot(hwnd) {
                             unsafe {
                                 let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
                                     Some(state.parent),
@@ -445,12 +466,12 @@ unsafe extern "system" fn settings_window_proc(hwnd: HWND, msg: u32, wparam: WPA
                         }
                     }
                     STARTUP_YES_ID | STARTUP_NO_ID => {
-                        if let Some(state) = state_mut(hwnd) {
-                            let result = Config::load().and_then(|previous| {
-                                apply_startup_preference(state, previous, Config::save, crate::autostart::sync)
-                            });
-                            if let Err(error) = result {
-                                restore_startup_radio(state);
+                        let result = Config::load().and_then(|previous| {
+                            apply_startup_preference(hwnd, previous, Config::save, crate::autostart::sync)
+                        });
+                        if let Err(error) = result {
+                            if let Some(state) = state_snapshot(hwnd) {
+                                restore_startup_radio(&state);
                                 crate::autostart::show_error(hwnd, state.config.language(), &error);
                             }
                         }
@@ -458,21 +479,7 @@ unsafe extern "system" fn settings_window_proc(hwnd: HWND, msg: u32, wparam: WPA
                     CHARACTER_CAT_ID | CHARACTER_DOG_ID | LANGUAGE_AUTO_ID | LANGUAGE_ZH_ID | LANGUAGE_EN_ID
                     | THEME_SYSTEM_ID | THEME_LIGHT_ID | THEME_DARK_ID | CLOSE_EXIT_ID | CLOSE_TRAY_ID
                     | AUTO_HIDE_YES_ID | AUTO_HIDE_NO_ID => {
-                        if let Some(state) = state_mut(hwnd) {
-                            if let Ok(config) = Config::load().map(|config| read_config_without_period(state, config)) {
-                                if config.save().is_ok() {
-                                    state.config = config;
-                                    unsafe {
-                                        let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
-                                            Some(state.parent),
-                                            WM_COMMAND,
-                                            WPARAM(SETTINGS_CHANGED_ID),
-                                            LPARAM(0),
-                                        );
-                                    }
-                                }
-                            }
-                        }
+                        let _ = Config::load().and_then(|previous| save_changed_settings(hwnd, previous, Config::save));
                     }
                     _ => {}
                 }
@@ -486,7 +493,7 @@ unsafe extern "system" fn settings_window_proc(hwnd: HWND, msg: u32, wparam: WPA
             LRESULT(0)
         }
         WM_SETFOCUS => {
-            if let Some(state) = state_mut(hwnd) {
+            if let Some(state) = state_snapshot(hwnd) {
                 unsafe {
                     let _ = SetFocus(Some(state.period));
                 }
@@ -494,21 +501,19 @@ unsafe extern "system" fn settings_window_proc(hwnd: HWND, msg: u32, wparam: WPA
             LRESULT(0)
         }
         WM_NCDESTROY => {
-            if let Some(state) = state_mut(hwnd)
-                && state.embedded
-            {
-                unsafe {
-                    let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
-                        Some(state.parent),
-                        WM_COMMAND,
-                        WPARAM(SETTINGS_CLOSED_ID),
-                        LPARAM(0),
-                    );
-                }
-            }
             let raw = unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) };
             if raw != 0 {
-                drop(unsafe { Box::from_raw(raw as *mut SettingsState) });
+                let state = unsafe { Box::from_raw(raw as *mut SettingsState) };
+                if state.embedded {
+                    unsafe {
+                        let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                            Some(state.parent),
+                            WM_COMMAND,
+                            WPARAM(SETTINGS_CLOSED_ID),
+                            LPARAM(0),
+                        );
+                    }
+                }
             }
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
@@ -516,6 +521,19 @@ unsafe extern "system" fn settings_window_proc(hwnd: HWND, msg: u32, wparam: WPA
     }
 }
 
+// Owned snapshots can safely span synchronous messages or a modal dialog.
+fn state_snapshot(hwnd: HWND) -> Option<SettingsState> {
+    let raw = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const SettingsState;
+    unsafe { raw.as_ref().cloned() }
+}
+
+// Only update local data here; never send messages or destroy windows.
+fn with_state<R>(hwnd: HWND, update: impl FnOnce(&mut SettingsState) -> R) -> Option<R> {
+    let raw = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut SettingsState;
+    unsafe { raw.as_mut().map(update) }
+}
+
+#[cfg(test)]
 fn state_mut(hwnd: HWND) -> Option<&'static mut SettingsState> {
     let raw = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut SettingsState;
     unsafe { raw.as_mut() }
@@ -527,8 +545,8 @@ fn create_controls(hwnd: HWND, state: &mut SettingsState) {
     } else {
         COLORREF(0x00F0F0F0)
     };
-    state.background_brush = unsafe { CreateSolidBrush(background) };
-    state.control_brush = unsafe { CreateSolidBrush(background) };
+    state.background_brush = Rc::new(SettingsBrush(unsafe { CreateSolidBrush(background) }));
+    state.control_brush = Rc::new(SettingsBrush(unsafe { CreateSolidBrush(background) }));
     let chinese = state.config.language() == crate::i18n::Language::Chinese;
     let mut font_controls = Vec::new();
     state.period = create_edit(
@@ -734,8 +752,8 @@ fn create_controls(hwnd: HWND, state: &mut SettingsState) {
     for control in &state.font_controls {
         set_font(*control, state.font);
     }
-    for title in &state.font_controls[..SETTINGS_TITLE_COUNT] {
-        set_font(*title, state.title_font);
+    for title in &state.font_controls[..state.font_controls.len().min(SETTINGS_TITLE_COUNT)] {
+        set_font(*title, state.title_font.as_ref().map(|font| font.0));
     }
 }
 
@@ -763,22 +781,28 @@ fn populate_config_controls(state: &mut SettingsState) {
 }
 
 pub fn update_settings_panel_font(hwnd: HWND, dpi: u32) {
-    let Some(state) = state_mut(hwnd) else {
+    let Some(mut state) = state_snapshot(hwnd) else {
         return;
     };
     state.font = crate::ui::font::common_gui_font(dpi, state.config.language() == crate::i18n::Language::Chinese);
-    replace_title_font(state);
+    let previous_title_font = state.title_font.clone();
+    replace_title_font(&mut state);
+    with_state(hwnd, |current| {
+        current.font = state.font;
+        current.title_font = state.title_font.clone();
+    });
     for control in &state.font_controls {
         set_font(*control, state.font);
     }
-    for title in &state.font_controls[..SETTINGS_TITLE_COUNT] {
-        set_font(*title, state.title_font);
+    for title in &state.font_controls[..state.font_controls.len().min(SETTINGS_TITLE_COUNT)] {
+        set_font(*title, state.title_font.as_ref().map(|font| font.0));
     }
     layout_settings_panel(hwnd, dpi);
+    drop(previous_title_font);
 }
 
 pub fn update_settings_panel_language(hwnd: HWND, language: crate::i18n::Language) {
-    let Some(state) = state_mut(hwnd) else {
+    let Some(state) = state_snapshot(hwnd) else {
         return;
     };
     let chinese = language == crate::i18n::Language::Chinese;
@@ -807,7 +831,10 @@ pub fn update_settings_panel_language(hwnd: HWND, language: crate::i18n::Languag
             "Launch at startup:"
         },
     ];
-    for (control, text) in state.font_controls[..SETTINGS_TITLE_COUNT].iter().zip(titles) {
+    for (control, text) in state.font_controls[..state.font_controls.len().min(SETTINGS_TITLE_COUNT)]
+        .iter()
+        .zip(titles)
+    {
         set_control_text(*control, text);
     }
     let language_options = if chinese {
@@ -850,13 +877,13 @@ pub fn update_settings_panel_language(hwnd: HWND, language: crate::i18n::Languag
 }
 
 pub fn update_settings_panel_auto_hide(hwnd: HWND, enabled: bool) {
-    if let Some(state) = state_mut(hwnd) {
+    if let Some(state) = state_snapshot(hwnd) {
         set_radio_group(&state.auto_hide, if enabled { "yes" } else { "no" }, &["yes", "no"]);
     }
 }
 
 pub fn refresh_settings_panel_theme(hwnd: HWND, config: &Config) {
-    let Some(state) = state_mut(hwnd) else {
+    let Some(mut state) = state_snapshot(hwnd) else {
         return;
     };
     let dark_mode = is_settings_dark_mode(config);
@@ -867,15 +894,14 @@ pub fn refresh_settings_panel_theme(hwnd: HWND, config: &Config) {
     };
 
     state.dark_mode = dark_mode;
+    state.background_brush = Rc::new(SettingsBrush(unsafe { CreateSolidBrush(background) }));
+    state.control_brush = Rc::new(SettingsBrush(unsafe { CreateSolidBrush(background) }));
+    with_state(hwnd, |current| {
+        current.dark_mode = dark_mode;
+        current.background_brush = state.background_brush.clone();
+        current.control_brush = state.control_brush.clone();
+    });
     unsafe {
-        if !state.background_brush.is_invalid() {
-            let _ = DeleteObject(HGDIOBJ(state.background_brush.0));
-        }
-        if !state.control_brush.is_invalid() {
-            let _ = DeleteObject(HGDIOBJ(state.control_brush.0));
-        }
-        state.background_brush = CreateSolidBrush(background);
-        state.control_brush = CreateSolidBrush(background);
         let _ = InvalidateRect(Some(hwnd), None, true);
         for control in &state.font_controls {
             let _ = InvalidateRect(Some(*control), None, true);
@@ -884,12 +910,10 @@ pub fn refresh_settings_panel_theme(hwnd: HWND, config: &Config) {
 }
 
 fn replace_title_font(state: &mut SettingsState) {
-    if let Some(font) = state.title_font.take() {
-        unsafe {
-            let _ = DeleteObject(HGDIOBJ(font.0));
-        }
-    }
-    state.title_font = state.font.and_then(create_bold_font);
+    state.title_font = state
+        .font
+        .and_then(create_bold_font)
+        .map(|font| Rc::new(SettingsFont(font)));
 }
 
 fn create_bold_font(font: HFONT) -> Option<HFONT> {
@@ -969,10 +993,10 @@ unsafe extern "system" fn reset_defaults_subclass(
             return LRESULT(1);
         }
         WM_MOUSEMOVE | WM_MOUSELEAVE => {
-            if let Some(state) = state_mut(HWND(panel as _)) {
+            if let Some(state) = state_snapshot(HWND(panel as _)) {
                 let hovered = message == WM_MOUSEMOVE;
                 if state.reset_defaults_hovered != hovered {
-                    state.reset_defaults_hovered = hovered;
+                    with_state(HWND(panel as _), |current| current.reset_defaults_hovered = hovered);
                     unsafe {
                         if hovered {
                             let mut tracking = TRACKMOUSEEVENT {
@@ -1090,10 +1114,30 @@ fn normalize_period(hwnd: HWND) {
 }
 
 pub fn save_settings_panel(hwnd: HWND) -> Result<()> {
-    let Some(state) = state_mut(hwnd) else {
+    let Some(state) = state_snapshot(hwnd) else {
         return Err(Error::from_win32());
     };
-    read_config(state, Config::load()?).save()
+    let config = read_config(&state, Config::load()?);
+    with_state(hwnd, |_| ()).ok_or_else(Error::from_win32)?;
+    config.save()
+}
+
+fn save_changed_settings(hwnd: HWND, previous: Config, save: impl FnOnce(&Config) -> Result<()>) -> Result<()> {
+    let state = state_snapshot(hwnd).ok_or_else(Error::from_win32)?;
+    let config = read_config_without_period(&state, previous);
+    with_state(hwnd, |_| ()).ok_or_else(Error::from_win32)?;
+    save(&config)?;
+    if with_state(hwnd, |current| current.config = config).is_some() {
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                Some(state.parent),
+                WM_COMMAND,
+                WPARAM(SETTINGS_CHANGED_ID),
+                LPARAM(0),
+            );
+        }
+    }
+    Ok(())
 }
 
 fn restore_startup_radio(state: &SettingsState) {
@@ -1117,9 +1161,11 @@ fn reset_to_defaults(hwnd: HWND, previous: Config, save: impl FnOnce(&Config) ->
         ..Config::default()
     };
     save(&defaults)?;
-    let state = state_mut(hwnd).ok_or_else(Error::from_win32)?;
+    let mut state = state_snapshot(hwnd).ok_or_else(Error::from_win32)?;
     state.config = defaults.clone();
-    populate_config_controls(state);
+    with_state(hwnd, |current| current.config = defaults.clone()).ok_or_else(Error::from_win32)?;
+    populate_config_controls(&mut state);
+    with_state(hwnd, |current| current.period_changed = false);
     update_settings_panel_language(hwnd, defaults.language());
     refresh_settings_panel_theme(hwnd, &defaults);
     update_settings_panel_font(hwnd, unsafe { GetDpiForWindow(hwnd) }.max(96));
@@ -1127,11 +1173,12 @@ fn reset_to_defaults(hwnd: HWND, previous: Config, save: impl FnOnce(&Config) ->
 }
 
 fn apply_startup_preference(
-    state: &mut SettingsState,
+    hwnd: HWND,
     previous: Config,
     save: impl FnMut(&Config) -> Result<()>,
     sync: impl FnOnce(bool) -> Result<()>,
 ) -> Result<()> {
+    let mut state = state_snapshot(hwnd).ok_or_else(Error::from_win32)?;
     let mut next = previous.clone();
     next.launch_at_startup = is_checked(state.launch_at_startup[0]);
     state.config = previous;
@@ -1139,7 +1186,9 @@ fn apply_startup_preference(
     if result.is_ok() {
         state.config = next;
     }
-    restore_startup_radio(state);
+    if with_state(hwnd, |current| current.config = state.config.clone()).is_some() {
+        restore_startup_radio(&state);
+    }
     result
 }
 
@@ -1315,6 +1364,238 @@ mod tests {
     use super::*;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 
+    fn isolated_panel() -> Result<(HWND, HWND)> {
+        let instance: HINSTANCE = unsafe { GetModuleHandleW(None)? }.into();
+        let parent = unsafe {
+            CreateWindowExW(
+                Default::default(),
+                w!("STATIC"),
+                w!(""),
+                Default::default(),
+                0,
+                0,
+                800,
+                533,
+                None,
+                None,
+                Some(instance),
+                None,
+            )?
+        };
+        let panel = create_settings_panel(parent, instance, Config::default(), None)?;
+        Ok((parent, panel))
+    }
+
+    #[test]
+    fn changed_settings_preserve_minutes_and_parent_notification_can_close_panel() -> Result<()> {
+        use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, IsWindow, MSG, PM_REMOVE, PeekMessageW};
+        unsafe extern "system" fn close_panel(
+            hwnd: HWND,
+            msg: u32,
+            wp: WPARAM,
+            lp: LPARAM,
+            _: usize,
+            panel: usize,
+        ) -> LRESULT {
+            if msg == WM_COMMAND && wp.0 == SETTINGS_CHANGED_ID {
+                unsafe {
+                    let _ = DestroyWindow(HWND(panel as _));
+                }
+                return LRESULT(0);
+            }
+            unsafe { DefSubclassProc(hwnd, msg, wp, lp) }
+        }
+        let (parent, panel) = isolated_panel()?;
+        let state = state_snapshot(panel).unwrap();
+        set_window_text(state.period, "37");
+        set_radio_group(&state.character, "dog", &["cat", "dog"]);
+        set_radio_group(&state.language, "en", &["auto", "zh", "en"]);
+        assert!(
+            save_changed_settings(panel, state.config.clone(), |_| Err(Error::from_hresult(
+                windows::Win32::Foundation::ERROR_ACCESS_DENIED.to_hresult()
+            )))
+            .is_err()
+        );
+        assert_eq!(state_snapshot(panel).unwrap().config, state.config);
+        save_changed_settings(panel, state.config.clone(), |config| {
+            assert_eq!(config.character, "dog");
+            assert_eq!(config.language, "en");
+            assert_eq!(config.period, state.config.period);
+            Ok(())
+        })?;
+        let current = state_snapshot(panel).unwrap();
+        assert_eq!(current.config.character, "dog");
+        assert_eq!(get_window_text(current.period), "37");
+        assert!(current.period_changed);
+        assert_eq!(read_config(&current, current.config.clone()).period, 37 * 60);
+        unsafe {
+            assert!(SetWindowSubclass(parent, Some(close_panel), 1, panel.0 as usize).as_bool());
+        }
+        let mut message = MSG::default();
+        assert!(unsafe { PeekMessageW(&mut message, Some(parent), WM_COMMAND, WM_COMMAND, PM_REMOVE).as_bool() });
+        assert_eq!(message.wParam.0, SETTINGS_CHANGED_ID);
+        unsafe {
+            DispatchMessageW(&message);
+        }
+        assert!(!unsafe { IsWindow(Some(panel)).as_bool() });
+        assert!(state_snapshot(panel).is_none());
+        unsafe {
+            DestroyWindow(parent)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn startup_sync_can_destroy_panel_and_still_roll_back_saved_preference() -> Result<()> {
+        use windows::Win32::Foundation::ERROR_ACCESS_DENIED;
+        let (parent, panel) = isolated_panel()?;
+        let state = state_snapshot(panel).unwrap();
+        set_radio_group(&state.launch_at_startup, "yes", &["yes", "no"]);
+        let previous = state.config.clone();
+        let brush = Rc::downgrade(&state.background_brush);
+        drop(state);
+        let mut saved = Vec::new();
+        let result = apply_startup_preference(
+            panel,
+            previous,
+            |config| {
+                saved.push(config.launch_at_startup);
+                Ok(())
+            },
+            |_| {
+                unsafe {
+                    DestroyWindow(panel)?;
+                }
+                Err(Error::from_hresult(ERROR_ACCESS_DENIED.to_hresult()))
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(saved, [true, false]);
+        assert!(state_snapshot(panel).is_none());
+        assert!(brush.upgrade().is_none());
+        unsafe {
+            DestroyWindow(parent)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reset_save_can_close_panel_before_controls_are_updated() -> Result<()> {
+        let (parent, panel) = isolated_panel()?;
+        let previous = state_snapshot(panel).unwrap().config;
+        let result = reset_to_defaults(panel, previous, |_| {
+            unsafe {
+                DestroyWindow(panel)?;
+            }
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert!(state_snapshot(panel).is_none());
+        unsafe {
+            DestroyWindow(parent)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn radio_query_that_closes_panel_aborts_save() -> Result<()> {
+        unsafe extern "system" fn close_panel(
+            hwnd: HWND,
+            msg: u32,
+            wp: WPARAM,
+            lp: LPARAM,
+            _: usize,
+            panel: usize,
+        ) -> LRESULT {
+            if msg == BM_GETCHECK {
+                unsafe {
+                    let _ = DestroyWindow(HWND(panel as _));
+                }
+                return LRESULT(0);
+            }
+            unsafe { DefSubclassProc(hwnd, msg, wp, lp) }
+        }
+        let (parent, panel) = isolated_panel()?;
+        let state = state_snapshot(panel).unwrap();
+        assert!(unsafe { SetWindowSubclass(state.character[0], Some(close_panel), 1, panel.0 as usize).as_bool() });
+        let result = save_changed_settings(panel, state.config, |_| panic!("closed panel must not save"));
+        assert!(result.is_err());
+        assert!(state_snapshot(panel).is_none());
+        unsafe {
+            DestroyWindow(parent)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn title_font_remains_valid_when_setfont_callback_destroys_panel() -> Result<()> {
+        use std::cell::Cell;
+        struct Callback {
+            panel: HWND,
+            font: Cell<HFONT>,
+            valid_after_close: Cell<bool>,
+        }
+        unsafe extern "system" fn close_panel(
+            hwnd: HWND,
+            msg: u32,
+            wp: WPARAM,
+            lp: LPARAM,
+            _: usize,
+            data: usize,
+        ) -> LRESULT {
+            let data = unsafe { &*(data as *const Callback) };
+            if msg == WM_SETFONT {
+                let title_font = state_snapshot(data.panel)
+                    .and_then(|state| state.title_font)
+                    .map(|font| font.0);
+                if title_font == Some(HFONT(wp.0 as _)) {
+                    data.font.set(HFONT(wp.0 as _));
+                    unsafe {
+                        let _ = DestroyWindow(data.panel);
+                    }
+                    let mut description = LOGFONTW::default();
+                    data.valid_after_close.set(
+                        unsafe {
+                            GetObjectW(
+                                HGDIOBJ(wp.0 as _),
+                                std::mem::size_of::<LOGFONTW>() as i32,
+                                Some((&mut description as *mut LOGFONTW).cast()),
+                            )
+                        } != 0,
+                    );
+                    return LRESULT(0);
+                }
+            }
+            unsafe { DefSubclassProc(hwnd, msg, wp, lp) }
+        }
+        let (parent, panel) = isolated_panel()?;
+        let title = state_snapshot(panel).unwrap().font_controls[0];
+        let data = Callback {
+            panel,
+            font: Cell::new(HFONT::default()),
+            valid_after_close: Cell::new(false),
+        };
+        assert!(unsafe { SetWindowSubclass(title, Some(close_panel), 1, &data as *const _ as usize).as_bool() });
+        update_settings_panel_font(panel, 144);
+        assert!(state_snapshot(panel).is_none());
+        assert!(data.valid_after_close.get());
+        let mut description = LOGFONTW::default();
+        assert_eq!(
+            unsafe {
+                GetObjectW(
+                    HGDIOBJ(data.font.get().0),
+                    std::mem::size_of::<LOGFONTW>() as i32,
+                    Some((&mut description as *mut LOGFONTW).cast()),
+                )
+            },
+            0
+        );
+        unsafe {
+            DestroyWindow(parent)?;
+        }
+        Ok(())
+    }
+
     #[test]
     fn reset_defaults_preserves_startup_and_preserves_panel_on_save_failure() -> Result<()> {
         use windows::Win32::Foundation::ERROR_ACCESS_DENIED;
@@ -1448,7 +1729,7 @@ mod tests {
                 let mut saves = 0;
                 let mut syncs = 0;
                 let result = apply_startup_preference(
-                    state,
+                    panel,
                     previous.clone(),
                     |_| {
                         saves += 1;
