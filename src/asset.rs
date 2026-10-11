@@ -398,6 +398,41 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "manual selected-character loading benchmark; run in Release after review and commit"]
+    fn selected_character_load_benchmark() {
+        let gdi_plus = crate::gdi::GdiPlus::new().unwrap();
+        println!("character,iteration,load_ms,decoded_bytes");
+        for id in ["cat", "dog"] {
+            let mut samples = Vec::new();
+            for iteration in 1..=30 {
+                let started = std::time::Instant::now();
+                let animations = super::load_character(id, &gdi_plus).unwrap();
+                let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+                let frames = animations
+                    .idle
+                    .frames
+                    .iter()
+                    .chain(&animations.walk.frames)
+                    .chain(&animations.jump.frames);
+                let bytes: usize = frames.map(|frame| frame.pixels.len()).sum();
+                println!("{id},{iteration},{elapsed_ms:.3},{bytes}");
+                samples.push(elapsed_ms);
+                // Destroy before the next load, outside the timed region. Never clone the catalog.
+                drop(animations);
+            }
+            let first = samples[0];
+            samples.sort_by(f64::total_cmp);
+            println!(
+                "summary {id}: first_ms={first:.3}, median_ms={:.3}, p95_ms={:.3}, min_ms={:.3}, max_ms={:.3}",
+                (samples[14] + samples[15]) / 2.0,
+                samples[28],
+                samples[0],
+                samples[29]
+            );
+        }
+    }
+
+    #[test]
     fn loads_embedded_frames_for_every_manifest_animation() {
         let gdi_plus = crate::gdi::GdiPlus::new().expect("GDI+ should initialize");
         let catalog = load_character_catalog(&gdi_plus).expect("checked-in pet assets should load");
