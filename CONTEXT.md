@@ -51,6 +51,12 @@ fonts use `Rc` so callbacks that close the panel cannot release resources still
 used by an operation. The attached pointer is cleared before close notification
 and cleanup. Ordinary setting changes preserve an unsaved minutes input; startup
 preference failures still roll back saved configuration even if the panel closes.
+Bubble-window reads use owned snapshots, and mutations use short closures before
+layout or visibility calls. Fonts, brush, and pen share ownership through `Rc`
+until in-flight drawing or layout ends. A layout revision rejects stale work
+after synchronous callbacks; nested updates invalidate the position cache so
+the next update reapplies the current layout. Destruction clears the attached
+pointer before releasing state, including when the Pet owner destroys its bubble.
 Pet animation uses a 16 ms window timer only while the Pet window
 is visible, including its entrance and exit animations, and `Instant` to
 select frames. Hiding the Pet stops that timer; queued timer messages do

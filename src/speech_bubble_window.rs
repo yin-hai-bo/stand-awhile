@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use std::{rc::Rc, sync::OnceLock};
 
 use windows::{
     Win32::{
@@ -31,12 +31,13 @@ const BUBBLE_HORIZONTAL_PADDING: i32 = 80;
 const BUBBLE_VERTICAL_PADDING: i32 = 56;
 const BUBBLE_TEXT_GAP: i32 = 6;
 const BUBBLE_GAP: i32 = 8;
-const BUBBLE_FONT_HEIGHT: i32 = -30;
-const BUBBLE_HINT_FONT_HEIGHT: i32 = 20;
+const BUBBLE_FONT_HEIGHT: i32 = -28;
+const BUBBLE_HINT_FONT_HEIGHT: i32 = 16;
 const BUBBLE_BORDER_WIDTH: i32 = 4;
 const BUBBLE_BACKGROUND: COLORREF = COLORREF(0x00c4efff);
 const BUBBLE_BORDER: COLORREF = COLORREF(0x006e6948);
 const BUBBLE_TEXT: COLORREF = COLORREF(0x00504a35);
+const BUBBLE_HINT_TEXT: COLORREF = COLORREF(0x00736e5b);
 
 pub struct SpeechBubbleWindow {
     hwnd: HWND,
@@ -77,31 +78,43 @@ impl SpeechBubbleWindow {
     }
 
     pub fn update(&self, pet_position: (i32, i32), pet_size: (i32, i32), text: Option<&str>) -> Result<()> {
-        let state = state_mut(self.hwnd).ok_or_else(Error::from_win32)?;
         let next_text = text.unwrap_or_default().to_owned();
-        let text_changed = state.text != next_text;
-        state.text = next_text;
-        if state.text.is_empty() {
-            if state.visible {
+        let (text_changed, hide) = with_state(self.hwnd, |state| {
+            let text_changed = state.text != next_text;
+            state.text = next_text;
+            let hide = state.text.is_empty() && state.visible;
+            if state.text.is_empty() {
                 state.visible = false;
+            } else {
+                state.pet_position = pet_position;
+                state.pet_size = pet_size;
+            }
+            (text_changed, hide)
+        })
+        .ok_or_else(Error::from_win32)?;
+        if text.is_none_or(str::is_empty) {
+            if hide {
                 unsafe {
                     let _ = ShowWindow(self.hwnd, SW_HIDE);
                 }
             }
             return Ok(());
         }
-
-        state.pet_position = pet_position;
-        state.pet_size = pet_size;
-        layout_bubble(self.hwnd, state)?;
-
+        if !layout_bubble(self.hwnd)? {
+            return Ok(());
+        }
         if text_changed {
             unsafe {
                 let _ = InvalidateRect(Some(self.hwnd), None, false);
             }
         }
-        if !state.visible {
-            state.visible = true;
+        let show = with_state(self.hwnd, |state| {
+            let show = !state.visible && !state.text.is_empty();
+            state.visible |= show;
+            show
+        })
+        .unwrap_or(false);
+        if show {
             unsafe {
                 let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
             }
@@ -110,22 +123,25 @@ impl SpeechBubbleWindow {
     }
 
     pub fn set_position(&self, pet_position: (i32, i32), pet_size: (i32, i32)) -> Result<()> {
-        let state = state_mut(self.hwnd).ok_or_else(Error::from_win32)?;
-        state.pet_position = pet_position;
-        state.pet_size = pet_size;
-        layout_bubble(self.hwnd, state)
+        with_state(self.hwnd, |state| {
+            state.pet_position = pet_position;
+            state.pet_size = pet_size;
+        })
+        .ok_or_else(Error::from_win32)?;
+        layout_bubble(self.hwnd).map(|_| ())
     }
 
     pub fn hide(&self) {
-        let Some(state) = state_mut(self.hwnd) else {
-            return;
-        };
-        if !state.visible {
-            return;
-        }
-        state.visible = false;
-        unsafe {
-            let _ = ShowWindow(self.hwnd, SW_HIDE);
+        let hide = with_state(self.hwnd, |state| {
+            let hide = state.visible;
+            state.visible = false;
+            hide
+        })
+        .unwrap_or(false);
+        if hide {
+            unsafe {
+                let _ = ShowWindow(self.hwnd, SW_HIDE);
+            }
         }
     }
 }
@@ -184,7 +200,11 @@ fn measure_line(
     index: usize,
     line: &str,
 ) -> Result<SIZE> {
-    let font = if index == 0 { state.font } else { state.hint_font };
+    let font = if index == 0 {
+        state.resources.font
+    } else {
+        state.resources.hint_font
+    };
     let utf16 = line.encode_utf16().collect::<Vec<_>>();
     let mut size = SIZE::default();
     let previous = unsafe { SelectObject(hdc, HGDIOBJ(font.0)) };
@@ -255,20 +275,26 @@ impl Drop for SpeechBubbleWindow {
     }
 }
 
+#[derive(Clone)]
 struct BubbleState {
     dpi: u32,
     owner: HWND,
     pet_position: (i32, i32),
     pet_size: (i32, i32),
     text: String,
-    font: windows::Win32::Graphics::Gdi::HFONT,
-    hint_font: windows::Win32::Graphics::Gdi::HFONT,
-    brush: windows::Win32::Graphics::Gdi::HBRUSH,
-    pen: windows::Win32::Graphics::Gdi::HPEN,
+    resources: Rc<BubbleResources>,
+    revision: u64,
     width: i32,
     height: i32,
     position: Option<(i32, i32)>,
     visible: bool,
+}
+
+struct BubbleResources {
+    font: windows::Win32::Graphics::Gdi::HFONT,
+    hint_font: windows::Win32::Graphics::Gdi::HFONT,
+    brush: windows::Win32::Graphics::Gdi::HBRUSH,
+    pen: windows::Win32::Graphics::Gdi::HPEN,
 }
 
 impl BubbleState {
@@ -304,33 +330,22 @@ impl BubbleState {
             pet_position: (0, 0),
             pet_size: (0, 0),
             text: String::new(),
-            font,
-            hint_font,
-            brush,
-            pen,
+            resources: Rc::new(BubbleResources {
+                font,
+                hint_font,
+                brush,
+                pen,
+            }),
+            revision: 0,
             width: scale(BUBBLE_MIN_WIDTH, dpi),
             height: scale(BUBBLE_MIN_HEIGHT, dpi),
             position: None,
             visible: false,
         })
     }
-
-    fn set_dpi(&mut self, dpi: u32) -> Result<()> {
-        let dpi = dpi.max(96);
-        if self.dpi == dpi {
-            return Ok(());
-        }
-        let mut resources = Self::new(dpi, self.owner)?;
-        std::mem::swap(&mut self.font, &mut resources.font);
-        std::mem::swap(&mut self.hint_font, &mut resources.hint_font);
-        std::mem::swap(&mut self.pen, &mut resources.pen);
-        self.dpi = dpi;
-        self.position = None;
-        Ok(())
-    }
 }
 
-impl Drop for BubbleState {
+impl Drop for BubbleResources {
     fn drop(&mut self) {
         unsafe {
             let _ = DeleteObject(HGDIOBJ(self.font.0));
@@ -345,8 +360,9 @@ fn scale(value: i32, dpi: u32) -> i32 {
     ((value as i64 * dpi.max(96) as i64 + 48) / 96) as i32
 }
 
-fn layout_bubble(hwnd: HWND, state: &mut BubbleState) -> Result<()> {
-    let (width, height) = measure_bubble(hwnd, state)?;
+fn layout_bubble(hwnd: HWND) -> Result<bool> {
+    let state = state_snapshot(hwnd).ok_or_else(Error::from_win32)?;
+    let (width, height) = measure_bubble(hwnd, &state)?;
     let size_changed = (state.width, state.height) != (width, height);
     let position = bubble_position(
         state.pet_position,
@@ -356,13 +372,23 @@ fn layout_bubble(hwnd: HWND, state: &mut BubbleState) -> Result<()> {
         state.dpi,
     );
     if !size_changed && state.position == Some(position) {
-        return Ok(());
+        return Ok(true);
     }
-    set_ellipse_region(hwnd, width, height)?;
-    state.width = width;
-    state.height = height;
-    state.position = Some(position);
-    unsafe {
+    let revision = with_state(hwnd, |current| {
+        current.width = width;
+        current.height = height;
+        current.position = Some(position);
+        current.revision.wrapping_add(1)
+    })
+    .ok_or_else(Error::from_win32)?;
+    if let Err(error) = set_ellipse_region(hwnd, width, height) {
+        with_state(hwnd, |state| state.position = None);
+        return Err(error);
+    }
+    if !layout_is_current(hwnd, revision) {
+        return Ok(false);
+    }
+    let moved = unsafe {
         SetWindowPos(
             hwnd,
             Some(HWND_TOPMOST),
@@ -371,10 +397,29 @@ fn layout_bubble(hwnd: HWND, state: &mut BubbleState) -> Result<()> {
             width,
             height,
             SWP_NOACTIVATE | SWP_NOOWNERZORDER,
-        )?;
+        )
+    };
+    if let Err(error) = moved {
+        with_state(hwnd, |state| state.position = None);
+        return Err(error);
+    }
+    if !layout_is_current(hwnd, revision) {
+        return Ok(false);
+    }
+    unsafe {
         let _ = InvalidateRect(Some(hwnd), None, false);
     }
-    Ok(())
+    Ok(true)
+}
+
+fn layout_is_current(hwnd: HWND, revision: u64) -> bool {
+    if state_snapshot(hwnd).is_some_and(|state| state.revision == revision) {
+        return true;
+    }
+    // A nested layout may have run before the outer native move finished.
+    // Force the next update to apply the latest position again.
+    with_state(hwnd, |state| state.position = None);
+    false
 }
 
 fn register_class(instance: HINSTANCE) -> Result<()> {
@@ -408,10 +453,20 @@ fn attach_state(hwnd: HWND, state: BubbleState) {
     }
 }
 
-fn state_mut(hwnd: HWND) -> Option<&'static mut BubbleState> {
+fn state_snapshot(hwnd: HWND) -> Option<BubbleState> {
+    let raw = unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW(hwnd, GWLP_USERDATA) }
+        as *const BubbleState;
+    unsafe { raw.as_ref().cloned() }
+}
+
+// The closure must only update local data; window calls run after it returns.
+fn with_state<R>(hwnd: HWND, update: impl FnOnce(&mut BubbleState) -> R) -> Option<R> {
     let raw =
         unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut BubbleState;
-    unsafe { raw.as_mut() }
+    let state = unsafe { raw.as_mut()? };
+    let result = update(state);
+    state.revision = state.revision.wrapping_add(1);
+    Some(result)
 }
 
 unsafe extern "system" fn speech_bubble_window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -419,22 +474,34 @@ unsafe extern "system" fn speech_bubble_window_proc(hwnd: HWND, msg: u32, wparam
         WM_NCCREATE => LRESULT(1),
         WM_ERASEBKGND => LRESULT(1),
         WM_DPICHANGED => {
-            if let Some(state) = state_mut(hwnd) {
-                if state.set_dpi((wparam.0 & 0xffff) as u32).is_ok() {
-                    let _ = layout_bubble(hwnd, state);
+            if let Some(state) = state_snapshot(hwnd) {
+                let dpi = ((wparam.0 & 0xffff) as u32).max(96);
+                if dpi != state.dpi {
+                    if let Ok(next) = BubbleState::new(dpi, state.owner) {
+                        let previous = with_state(hwnd, |current| {
+                            current.dpi = dpi;
+                            current.position = None;
+                            std::mem::replace(&mut current.resources, next.resources)
+                        });
+                        drop(previous);
+                        let _ = layout_bubble(hwnd);
+                    }
+                } else {
+                    let _ = layout_bubble(hwnd);
                 }
             }
             LRESULT(0)
         }
         WM_PAINT => {
+            let state = state_snapshot(hwnd);
             let mut paint = Default::default();
             let hdc = unsafe { BeginPaint(hwnd, &mut paint) };
             let mut rect = RECT::default();
             unsafe {
                 let _ = GetClientRect(hwnd, &mut rect);
-                if let Some(state) = state_mut(hwnd) {
-                    let previous_brush = SelectObject(hdc, HGDIOBJ(state.brush.0));
-                    let previous_pen = SelectObject(hdc, HGDIOBJ(state.pen.0));
+                if let Some(state) = state.as_ref() {
+                    let previous_brush = SelectObject(hdc, HGDIOBJ(state.resources.brush.0));
+                    let previous_pen = SelectObject(hdc, HGDIOBJ(state.resources.pen.0));
                     let border_inset = scale(BUBBLE_BORDER_WIDTH, state.dpi) / 2;
                     let _ = Ellipse(
                         hdc,
@@ -446,11 +513,11 @@ unsafe extern "system" fn speech_bubble_window_proc(hwnd: HWND, msg: u32, wparam
                     SelectObject(hdc, previous_brush);
                     SelectObject(hdc, previous_pen);
                     let _ = SetBkMode(hdc, TRANSPARENT);
-                    let _ = SetTextColor(hdc, BUBBLE_TEXT);
                     rect.left += scale(BUBBLE_HORIZONTAL_PADDING / 2, state.dpi);
                     rect.right -= scale(BUBBLE_HORIZONTAL_PADDING / 2, state.dpi);
                     rect.top += scale(BUBBLE_VERTICAL_PADDING / 2, state.dpi);
                     for (index, line) in state.text.lines().enumerate() {
+                        let _ = SetTextColor(hdc, if index == 0 { BUBBLE_TEXT } else { BUBBLE_HINT_TEXT });
                         let Ok(size) = measure_line(hdc, state, index, line) else {
                             continue;
                         };
@@ -458,7 +525,11 @@ unsafe extern "system" fn speech_bubble_window_proc(hwnd: HWND, msg: u32, wparam
                             rect.top += scale(BUBBLE_TEXT_GAP, state.dpi);
                         }
                         rect.bottom = rect.top + size.cy;
-                        let font = if index == 0 { state.font } else { state.hint_font };
+                        let font = if index == 0 {
+                            state.resources.font
+                        } else {
+                            state.resources.hint_font
+                        };
                         let previous = SelectObject(hdc, HGDIOBJ(font.0));
                         let mut text = line.encode_utf16().collect::<Vec<_>>();
                         if !text.is_empty() {
@@ -475,8 +546,8 @@ unsafe extern "system" fn speech_bubble_window_proc(hwnd: HWND, msg: u32, wparam
         WM_NCDESTROY => {
             let raw = unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
             if raw != 0 {
-                let _state = unsafe { Box::from_raw(raw as *mut BubbleState) };
                 unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) };
+                let _state = unsafe { Box::from_raw(raw as *mut BubbleState) };
             }
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
@@ -506,7 +577,7 @@ impl SpeechBubbleController {
     }
 
     pub fn is_visible(&self) -> bool {
-        state_mut(self.window.hwnd).is_some_and(|state| state.visible)
+        state_snapshot(self.window.hwnd).is_some_and(|state| state.visible)
     }
 
     pub fn set_language(&mut self, language: Language) -> Result<()> {
@@ -514,7 +585,7 @@ impl SpeechBubbleController {
             return Ok(());
         }
         self.language = language;
-        let state = state_mut(self.window.hwnd).ok_or_else(Error::from_win32)?;
+        let state = state_snapshot(self.window.hwnd).ok_or_else(Error::from_win32)?;
         let visible = state.visible && self.player.is_visible();
         let (position, size) = (state.pet_position, state.pet_size);
         self.window
@@ -546,6 +617,309 @@ mod tests {
         bottom: 800,
     };
 
+    fn isolated_bubble() -> super::Result<(super::HWND, super::SpeechBubbleWindow)> {
+        use super::*;
+        let instance: HINSTANCE = unsafe { windows::Win32::System::LibraryLoader::GetModuleHandleW(None)? }.into();
+        let owner = unsafe {
+            CreateWindowExW(
+                Default::default(),
+                w!("STATIC"),
+                w!(""),
+                Default::default(),
+                100,
+                100,
+                100,
+                100,
+                None,
+                None,
+                Some(instance),
+                None,
+            )?
+        };
+        Ok((owner, SpeechBubbleWindow::create(instance, owner)?))
+    }
+
+    #[test]
+    fn layout_callback_can_destroy_owner_without_releasing_in_use_resources() -> super::Result<()> {
+        use super::*;
+        use std::cell::Cell;
+        use windows::Win32::{
+            Graphics::Gdi::{GetObjectW, LOGFONTW},
+            UI::{
+                Shell::{DefSubclassProc, SetWindowSubclass},
+                WindowsAndMessaging::WM_WINDOWPOSCHANGING,
+            },
+        };
+        struct Callback {
+            owner: HWND,
+            font: windows::Win32::Graphics::Gdi::HFONT,
+            called: Cell<bool>,
+            valid_after_destroy: Cell<bool>,
+            detached: Cell<bool>,
+        }
+        unsafe extern "system" fn close_owner(
+            hwnd: HWND,
+            msg: u32,
+            wp: WPARAM,
+            lp: LPARAM,
+            _: usize,
+            data: usize,
+        ) -> LRESULT {
+            let data = unsafe { &*(data as *const Callback) };
+            if msg == WM_WINDOWPOSCHANGING && !data.called.replace(true) {
+                unsafe {
+                    let _ = DestroyWindow(data.owner);
+                }
+                data.detached.set(state_snapshot(hwnd).is_none());
+                let mut font = LOGFONTW::default();
+                data.valid_after_destroy.set(
+                    unsafe {
+                        GetObjectW(
+                            HGDIOBJ(data.font.0),
+                            std::mem::size_of::<LOGFONTW>() as i32,
+                            Some((&mut font as *mut LOGFONTW).cast()),
+                        )
+                    } != 0,
+                );
+                return LRESULT(0);
+            }
+            unsafe { DefSubclassProc(hwnd, msg, wp, lp) }
+        }
+        let (owner, bubble) = isolated_bubble()?;
+        let state = state_snapshot(bubble.hwnd).unwrap();
+        let resources = Rc::downgrade(&state.resources);
+        let data = Callback {
+            owner,
+            font: state.resources.font,
+            called: Cell::new(false),
+            valid_after_destroy: Cell::new(false),
+            detached: Cell::new(false),
+        };
+        drop(state);
+        assert!(unsafe { SetWindowSubclass(bubble.hwnd, Some(close_owner), 1, &data as *const _ as usize).as_bool() });
+        let _ = bubble.update((300, 500), (100, 100), Some("Reminder"));
+        assert!(data.called.get());
+        assert!(data.detached.get());
+        assert!(data.valid_after_destroy.get());
+        assert!(resources.upgrade().is_none());
+        assert!(bubble.set_position((400, 500), (100, 100)).is_err());
+        bubble.hide();
+        Ok(())
+    }
+
+    #[test]
+    fn nested_update_prevents_outer_layout_from_showing_stale_text() -> super::Result<()> {
+        use super::*;
+        use std::cell::Cell;
+        use windows::Win32::UI::{
+            Shell::{DefSubclassProc, SetWindowSubclass},
+            WindowsAndMessaging::{IsWindowVisible, WM_WINDOWPOSCHANGING},
+        };
+        struct Callback {
+            window: *const SpeechBubbleWindow,
+            called: Cell<bool>,
+        }
+        unsafe extern "system" fn hide_during_layout(
+            hwnd: HWND,
+            msg: u32,
+            wp: WPARAM,
+            lp: LPARAM,
+            _: usize,
+            data: usize,
+        ) -> LRESULT {
+            let data = unsafe { &*(data as *const Callback) };
+            if msg == WM_WINDOWPOSCHANGING && !data.called.replace(true) {
+                let window = unsafe { &*data.window };
+                let _ = window.update((300, 500), (100, 100), None);
+            }
+            unsafe { DefSubclassProc(hwnd, msg, wp, lp) }
+        }
+        let (owner, bubble) = isolated_bubble()?;
+        let data = Callback {
+            window: &bubble,
+            called: Cell::new(false),
+        };
+        assert!(unsafe {
+            SetWindowSubclass(bubble.hwnd, Some(hide_during_layout), 1, &data as *const _ as usize).as_bool()
+        });
+        bubble.update((300, 500), (100, 100), Some("Reminder"))?;
+        assert!(data.called.get());
+        let state = state_snapshot(bubble.hwnd).unwrap();
+        assert!(state.text.is_empty());
+        assert!(!state.visible);
+        assert!(state.position.is_none());
+        assert!(!unsafe { IsWindowVisible(bubble.hwnd).as_bool() });
+        drop(state);
+        bubble.update((350, 550), (100, 100), Some("New reminder"))?;
+        let state = state_snapshot(bubble.hwnd).unwrap();
+        assert_eq!(state.text, "New reminder");
+        assert!(state.visible);
+        assert!(state.position.is_some());
+        drop(state);
+        drop(bubble);
+        unsafe {
+            DestroyWindow(owner)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn dpi_callback_keeps_old_font_alive_and_next_update_repairs_layout() -> super::Result<()> {
+        use super::*;
+        use std::cell::Cell;
+        use windows::Win32::{
+            Graphics::Gdi::{GetObjectW, LOGFONTW},
+            UI::{
+                Shell::{DefSubclassProc, SetWindowSubclass},
+                WindowsAndMessaging::{SendMessageW, WM_WINDOWPOSCHANGING},
+            },
+        };
+        struct Callback {
+            called: Cell<bool>,
+            font: windows::Win32::Graphics::Gdi::HFONT,
+            valid: Cell<bool>,
+        }
+        unsafe extern "system" fn change_dpi(
+            hwnd: HWND,
+            msg: u32,
+            wp: WPARAM,
+            lp: LPARAM,
+            _: usize,
+            data: usize,
+        ) -> LRESULT {
+            let data = unsafe { &*(data as *const Callback) };
+            if msg == WM_WINDOWPOSCHANGING && !data.called.replace(true) {
+                unsafe {
+                    SendMessageW(hwnd, WM_DPICHANGED, Some(WPARAM(192 | (192 << 16))), Some(LPARAM(0)));
+                }
+                let mut font = LOGFONTW::default();
+                data.valid.set(
+                    unsafe {
+                        GetObjectW(
+                            HGDIOBJ(data.font.0),
+                            std::mem::size_of::<LOGFONTW>() as i32,
+                            Some((&mut font as *mut LOGFONTW).cast()),
+                        )
+                    } != 0,
+                );
+            }
+            unsafe { DefSubclassProc(hwnd, msg, wp, lp) }
+        }
+        let (owner, bubble) = isolated_bubble()?;
+        let state = state_snapshot(bubble.hwnd).unwrap();
+        let old_resources = Rc::downgrade(&state.resources);
+        let data = Callback {
+            called: Cell::new(false),
+            font: state.resources.font,
+            valid: Cell::new(false),
+        };
+        drop(state);
+        assert!(unsafe { SetWindowSubclass(bubble.hwnd, Some(change_dpi), 1, &data as *const _ as usize).as_bool() });
+        bubble.update((300, 500), (100, 100), Some("Reminder"))?;
+        assert!(data.called.get());
+        assert!(data.valid.get());
+        assert!(old_resources.upgrade().is_none());
+        let state = state_snapshot(bubble.hwnd).unwrap();
+        assert_eq!(state.dpi, 192);
+        assert!(state.position.is_none());
+        drop(state);
+        bubble.update((300, 500), (100, 100), Some("Reminder"))?;
+        let state = state_snapshot(bubble.hwnd).unwrap();
+        let mut actual = RECT::default();
+        unsafe {
+            GetWindowRect(bubble.hwnd, &mut actual)?;
+        }
+        assert_eq!(
+            (actual.right - actual.left, actual.bottom - actual.top),
+            (state.width, state.height)
+        );
+        assert_eq!(Some((actual.left, actual.top)), state.position);
+        drop(state);
+        drop(bubble);
+        unsafe {
+            DestroyWindow(owner)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn hide_callback_can_destroy_bubble_and_repeated_hide_is_safe() -> super::Result<()> {
+        use super::*;
+        use windows::Win32::UI::{
+            Shell::{DefSubclassProc, SetWindowSubclass},
+            WindowsAndMessaging::WM_SHOWWINDOW,
+        };
+        unsafe extern "system" fn close_on_hide(
+            hwnd: HWND,
+            msg: u32,
+            wp: WPARAM,
+            lp: LPARAM,
+            _: usize,
+            _: usize,
+        ) -> LRESULT {
+            if msg == WM_SHOWWINDOW && wp.0 == 0 {
+                unsafe {
+                    let _ = DestroyWindow(hwnd);
+                }
+                return LRESULT(0);
+            }
+            unsafe { DefSubclassProc(hwnd, msg, wp, lp) }
+        }
+        let (owner, bubble) = isolated_bubble()?;
+        bubble.update((300, 500), (100, 100), Some("Reminder"))?;
+        let resources = Rc::downgrade(&state_snapshot(bubble.hwnd).unwrap().resources);
+        assert!(unsafe { SetWindowSubclass(bubble.hwnd, Some(close_on_hide), 1, 0).as_bool() });
+        bubble.hide();
+        assert!(state_snapshot(bubble.hwnd).is_none());
+        assert!(resources.upgrade().is_none());
+        bubble.hide();
+        drop(bubble);
+        unsafe {
+            DestroyWindow(owner)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn controller_cycles_visibility_and_releases_bubble_with_owner() -> super::Result<()> {
+        use super::*;
+        use std::time::{Duration, Instant};
+        use windows::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+        let (owner, bubble) = isolated_bubble()?;
+        let hwnd = bubble.hwnd;
+        let resources = Rc::downgrade(&state_snapshot(hwnd).unwrap().resources);
+        let mut controller = SpeechBubbleController {
+            window: bubble,
+            player: SpeechBubblePlayer::new(),
+            language: Language::English,
+        };
+        let now = Instant::now();
+        controller.start(now, Duration::from_millis(500));
+        assert!(!controller.update((300, 500), (100, 100), now)?);
+        for cycle in 0..3 {
+            let visible_at = now + Duration::from_millis(500) + Duration::from_secs(cycle * 15);
+            assert!(controller.update((300, 500), (100, 100), visible_at)?);
+            assert!(unsafe { IsWindowVisible(hwnd).as_bool() });
+            controller.set_position((350, 550), (100, 100))?;
+            controller.set_language(Language::Chinese)?;
+            assert_eq!(state_snapshot(hwnd).unwrap().text, pet_reminder_text(Language::Chinese));
+            assert!(!controller.update((350, 550), (100, 100), visible_at + Duration::from_secs(5))?);
+            assert!(!unsafe { IsWindowVisible(hwnd).as_bool() });
+            controller.set_language(Language::English)?;
+            assert!(state_snapshot(hwnd).unwrap().text.is_empty());
+            assert!(!unsafe { IsWindowVisible(hwnd).as_bool() });
+        }
+        unsafe {
+            DestroyWindow(owner)?;
+        }
+        assert!(!controller.is_visible());
+        assert!(state_snapshot(hwnd).is_none());
+        assert!(resources.upgrade().is_none());
+        controller.hide();
+        drop(controller);
+        Ok(())
+    }
+
     #[test]
     fn language_switch_updates_visible_text_without_restarting_or_showing_hidden_bubble() {
         use super::*;
@@ -571,30 +945,30 @@ mod tests {
             let mut controller = SpeechBubbleController::create(instance, owner, Language::English).unwrap();
             controller.set_language(Language::Chinese).unwrap();
             assert!(!IsWindowVisible(controller.window.hwnd).as_bool());
-            assert!(state_mut(controller.window.hwnd).unwrap().text.is_empty());
+            assert!(state_snapshot(controller.window.hwnd).unwrap().text.is_empty());
             let now = Instant::now();
             controller.start(now, Duration::ZERO);
             // Model a visible bubble while keeping the native test window hidden.
-            state_mut(controller.window.hwnd).unwrap().visible = true;
+            with_state(controller.window.hwnd, |state| state.visible = true).unwrap();
             controller.update((300, 500), (100, 100), now).unwrap();
             assert_eq!(
-                state_mut(controller.window.hwnd).unwrap().text,
+                state_snapshot(controller.window.hwnd).unwrap().text,
                 "该站起来活动一下啦！\n单击桌宠，开始新一轮倒计时"
             );
             controller.set_language(Language::English).unwrap();
             assert_eq!(
-                state_mut(controller.window.hwnd).unwrap().text,
+                state_snapshot(controller.window.hwnd).unwrap().text,
                 "Time to stand up and stretch!\nClick the pet to start a new countdown."
             );
-            assert_eq!(state_mut(controller.window.hwnd).unwrap().text.lines().count(), 2);
+            assert_eq!(state_snapshot(controller.window.hwnd).unwrap().text.lines().count(), 2);
             assert!(!IsWindowVisible(controller.window.hwnd).as_bool());
             controller
                 .update((300, 500), (100, 100), now + Duration::from_secs(5))
                 .unwrap();
-            assert!(state_mut(controller.window.hwnd).unwrap().text.is_empty());
+            assert!(state_snapshot(controller.window.hwnd).unwrap().text.is_empty());
             controller.set_language(Language::Chinese).unwrap();
             assert!(!IsWindowVisible(controller.window.hwnd).as_bool());
-            assert!(state_mut(controller.window.hwnd).unwrap().text.is_empty());
+            assert!(state_snapshot(controller.window.hwnd).unwrap().text.is_empty());
             drop(controller);
             DestroyWindow(owner).unwrap();
         }
@@ -627,13 +1001,13 @@ mod tests {
             .unwrap();
             let bubble = SpeechBubbleWindow::create(instance, owner).unwrap();
             assert_eq!(
-                state_mut(bubble.hwnd).unwrap().dpi,
+                state_snapshot(bubble.hwnd).unwrap().dpi,
                 GetDpiForWindow(bubble.hwnd).max(96)
             );
             let work_area = work_area_for_window(owner).unwrap();
             let pet_position = (work_area.left + 400, work_area.top + 500);
             let pet_size = (100, 100);
-            state_mut(bubble.hwnd).unwrap().text = "Stand up\nand stretch!".to_owned();
+            with_state(bubble.hwnd, |state| state.text = "Stand up\nand stretch!".to_owned()).unwrap();
             bubble.set_position(pet_position, pet_size).unwrap();
             let mut baseline = None;
             for dpi in [96, 120, 144, 192, 144, 96] {
@@ -643,22 +1017,22 @@ mod tests {
                     Some(WPARAM(dpi | (dpi << 16))),
                     Some(LPARAM(0)),
                 );
-                let state = state_mut(bubble.hwnd).unwrap();
+                let state = state_snapshot(bubble.hwnd).unwrap();
                 assert_eq!(state.dpi, dpi as u32);
                 let mut font = LOGFONTW::default();
                 assert_ne!(
                     GetObjectW(
-                        HGDIOBJ(state.font.0),
+                        HGDIOBJ(state.resources.font.0),
                         std::mem::size_of::<LOGFONTW>() as i32,
                         Some((&mut font as *mut LOGFONTW).cast())
                     ),
                     0
                 );
-                assert_eq!(font.lfHeight, -scale(30, dpi as u32));
+                assert_eq!(font.lfHeight, -scale(28, dpi as u32));
                 let mut pen = LOGPEN::default();
                 assert_ne!(
                     GetObjectW(
-                        HGDIOBJ(state.pen.0),
+                        HGDIOBJ(state.resources.pen.0),
                         std::mem::size_of::<LOGPEN>() as i32,
                         Some((&mut pen as *mut LOGPEN).cast())
                     ),
@@ -711,9 +1085,9 @@ mod tests {
                 SendMessageW(bubble.hwnd, WM_PAINT, Some(WPARAM(0)), Some(LPARAM(0)));
             }
             // A changed text height must resize even if work-area clamping keeps the position fixed.
-            state_mut(bubble.hwnd).unwrap().text = "One line".to_owned();
+            with_state(bubble.hwnd, |state| state.text = "One line".to_owned()).unwrap();
             bubble.set_position((work_area.left, work_area.top), pet_size).unwrap();
-            state_mut(bubble.hwnd).unwrap().text = "One line\nTwo lines".to_owned();
+            with_state(bubble.hwnd, |state| state.text = "One line\nTwo lines".to_owned()).unwrap();
             bubble.set_position((work_area.left, work_area.top), pet_size).unwrap();
             let mut actual = RECT::default();
             GetWindowRect(bubble.hwnd, &mut actual).unwrap();
@@ -748,7 +1122,7 @@ mod tests {
             .unwrap();
             let bubble = SpeechBubbleWindow::create(instance, owner).unwrap();
             for language in [Language::Chinese, Language::English] {
-                state_mut(bubble.hwnd).unwrap().text = pet_reminder_text(language).to_owned();
+                with_state(bubble.hwnd, |state| state.text = pet_reminder_text(language).to_owned()).unwrap();
                 bubble.set_position((300, 500), (100, 100)).unwrap();
                 for dpi in [96, 120, 144, 192, 96] {
                     SendMessageW(
@@ -757,14 +1131,18 @@ mod tests {
                         Some(WPARAM(dpi | (dpi << 16))),
                         Some(LPARAM(0)),
                     );
-                    let state = state_mut(bubble.hwnd).unwrap();
+                    let state = state_snapshot(bubble.hwnd).unwrap();
                     let hdc = GetDC(Some(bubble.hwnd));
                     assert!(!hdc.is_invalid());
                     let available_width = state.width - 2 * scale(BUBBLE_HORIZONTAL_PADDING / 2, dpi as u32);
                     let available_height = state.height - 2 * scale(BUBBLE_VERTICAL_PADDING / 2, dpi as u32);
                     let mut total_height = 0;
                     for (index, line) in state.text.lines().enumerate() {
-                        let font = if index == 0 { state.font } else { state.hint_font };
+                        let font = if index == 0 {
+                            state.resources.font
+                        } else {
+                            state.resources.hint_font
+                        };
                         let mut descriptor = windows::Win32::Graphics::Gdi::LOGFONTW::default();
                         assert_ne!(
                             windows::Win32::Graphics::Gdi::GetObjectW(
@@ -776,7 +1154,7 @@ mod tests {
                         );
                         assert_eq!(
                             descriptor.lfHeight,
-                            -scale(if index == 0 { 30 } else { 20 }, dpi as u32)
+                            -scale(if index == 0 { 28 } else { 16 }, dpi as u32)
                         );
                         let previous = SelectObject(hdc, HGDIOBJ(font.0));
                         let mut text = line.encode_utf16().collect::<Vec<_>>();
