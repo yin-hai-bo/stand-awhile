@@ -1502,7 +1502,7 @@ mod tests {
     #[ignore = "CPU benchmark; run explicitly on an otherwise idle machine"]
     fn visible_pet_render_cpu_budget() {
         use super::*;
-        use crate::{asset::load_character_catalog, gdi::GdiPlus};
+        use crate::{asset::load_character, gdi::GdiPlus};
         use windows::Win32::{
             Foundation::FILETIME,
             System::{
@@ -1522,12 +1522,11 @@ mod tests {
         }
 
         let gdi_plus = GdiPlus::new().unwrap();
-        let catalog = load_character_catalog(&gdi_plus).unwrap();
         let instance: HINSTANCE = unsafe { GetModuleHandleW(None) }.unwrap().into();
         let pet = PetWindow::create(
             instance,
             HWND::default(),
-            catalog.get("cat").unwrap().clone(),
+            load_character("cat", &gdi_plus).unwrap(),
             Language::English,
             None,
             "Settings",
@@ -1575,7 +1574,7 @@ mod tests {
     #[test]
     fn hidden_pet_has_no_animation_timer_work() {
         use super::*;
-        use crate::{asset::load_character_catalog, gdi::GdiPlus};
+        use crate::{asset::load_character, gdi::GdiPlus};
         use windows::Win32::{
             System::LibraryLoader::GetModuleHandleW,
             UI::WindowsAndMessaging::{DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, SendMessageW},
@@ -1619,12 +1618,11 @@ mod tests {
         }
 
         let gdi_plus = GdiPlus::new().unwrap();
-        let catalog = load_character_catalog(&gdi_plus).unwrap();
         let instance: HINSTANCE = unsafe { GetModuleHandleW(None) }.unwrap().into();
         let pet = PetWindow::create(
             instance,
             HWND::default(),
-            catalog.get("cat").unwrap().clone(),
+            load_character("cat", &gdi_plus).unwrap(),
             Language::English,
             None,
             "Settings",
@@ -1734,7 +1732,6 @@ mod tests {
                 width: 3,
                 height: 2,
                 pixels,
-                hitbox: None,
             };
             let clip = AnimationClip::new(vec![Frame { id: 0 }], Duration::from_millis(120), LoopMode::Loop).unwrap();
             let animation = PreparedAnimation {
@@ -1810,7 +1807,6 @@ mod tests {
                 width: 2,
                 height: 2,
                 pixels: [20, 40, 60, 255].repeat(4),
-                hitbox: None,
             }],
         };
         let foreground = unsafe { GetForegroundWindow() };
@@ -2061,6 +2057,33 @@ mod tests {
         }
         with_state(pet.hwnd, |state| state.drag = None).unwrap();
         pet.hide();
+    }
+
+    #[test]
+    fn hit_testing_uses_rendered_alpha_threshold() {
+        use super::*;
+        use windows::Win32::UI::WindowsAndMessaging::{HTCLIENT, HTTRANSPARENT, SendMessageW};
+
+        let pet = hidden_test_pet();
+        let now = Instant::now();
+        with_state(pet.hwnd, |state| {
+            state.walk.frames[0].pixels = [0, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 16].repeat(2);
+            start_clip(state, ActiveClip::Walk, now);
+        })
+        .unwrap();
+        update_frame_at(pet.hwnd, now).unwrap();
+        let mut rect = RECT::default();
+        unsafe { GetWindowRect(pet.hwnd, &mut rect).unwrap() };
+        for (offset, expected) in [
+            (0, HTTRANSPARENT),
+            (1, HTTRANSPARENT),
+            (2, HTCLIENT as i32),
+            (3, HTTRANSPARENT),
+        ] {
+            let point = LPARAM(((rect.top as u16 as u32) << 16 | (rect.left + offset) as u16 as u32) as isize);
+            let result = unsafe { SendMessageW(pet.hwnd, WM_NCHITTEST, None, Some(point)) };
+            assert_eq!(result.0, expected as isize);
+        }
     }
 
     #[test]

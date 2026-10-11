@@ -84,6 +84,9 @@ At non-native DPI, looping Idle/Walk frames are resampled lazily once and
 cached without their transparent padding. Restoring a cached frame preserves
 the full surface pixels and alpha hit testing. Changing character or DPI
 clears the cache; native-size frames and the one-shot Jump are not cached.
+Hit testing reads the current rendered surface's alpha directly; decoded frames
+do not store or compute a separate hitbox. Asset and Pet tests use the same
+selected-character loader as the application, without an all-character catalog.
 
 The countdown intentionally accepts occasional delays of a few seconds to
 ten or more seconds; exact wall-clock timing is not required. See

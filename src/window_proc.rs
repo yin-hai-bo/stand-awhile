@@ -1181,7 +1181,6 @@ mod tests {
                 width: 1,
                 height: 1,
                 pixels: vec![0, 0, 0, 255],
-                hitbox: None,
             }],
         };
         let original = CharacterAnimations {

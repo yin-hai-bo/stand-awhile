@@ -47,43 +47,10 @@ impl From<serde_json::Error> for AssetError {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FrameHitbox {
-    pub left: u32,
-    pub top: u32,
-    pub right: u32,
-    pub bottom: u32,
-}
-
-impl FrameHitbox {
-    fn from_pixels(width: u32, height: u32, pixels: &[u8]) -> Option<Self> {
-        let mut bounds: Option<(u32, u32, u32, u32)> = None;
-        for y in 0..height {
-            for x in 0..width {
-                let alpha = pixels[((y * width + x) * 4 + 3) as usize];
-                if alpha == 0 {
-                    continue;
-                }
-                bounds = Some(match bounds {
-                    Some((left, top, right, bottom)) => (left.min(x), top.min(y), right.max(x + 1), bottom.max(y + 1)),
-                    None => (x, y, x + 1, y + 1),
-                });
-            }
-        }
-        bounds.map(|(left, top, right, bottom)| Self {
-            left,
-            top,
-            right,
-            bottom,
-        })
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreparedFrame {
     pub width: u32,
     pub height: u32,
     pub pixels: Vec<u8>,
-    pub hitbox: Option<FrameHitbox>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -97,18 +64,6 @@ pub struct CharacterAnimations {
     pub idle: PreparedAnimation,
     pub walk: PreparedAnimation,
     pub jump: PreparedAnimation,
-}
-
-#[cfg(test)]
-pub struct CharacterCatalog {
-    characters: BTreeMap<String, CharacterAnimations>,
-}
-
-#[cfg(test)]
-impl CharacterCatalog {
-    pub fn get(&self, character_id: &str) -> Option<&CharacterAnimations> {
-        self.characters.get(character_id)
-    }
 }
 
 #[derive(Deserialize)]
@@ -140,25 +95,6 @@ pub fn load_character(character_id: &str, _gdi_plus: &GdiPlus) -> Result<Charact
         .or_else(|| manifest.characters.get("cat"))
         .ok_or_else(|| AssetError::InvalidManifest("manifest has no default character".to_owned()))?;
     load_character_animations(character, manifest.default_frame_duration_ms)
-}
-
-#[cfg(test)]
-pub fn load_character_catalog(_gdi_plus: &GdiPlus) -> Result<CharacterCatalog, AssetError> {
-    let manifest = load_manifest()?;
-    let characters = manifest
-        .characters
-        .iter()
-        .map(|(id, character)| {
-            load_character_animations(character, manifest.default_frame_duration_ms)
-                .map(|animations| (id.clone(), animations))
-        })
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
-
-    if characters.is_empty() {
-        return Err(AssetError::InvalidManifest("manifest has no characters".to_owned()));
-    }
-
-    Ok(CharacterCatalog { characters })
 }
 
 fn load_character_animations(
@@ -296,12 +232,7 @@ fn read_locked_bitmap(bitmap: *mut GpBitmap, width: u32, height: u32) -> Result<
     let result = copy_premultiplied_pixels(&data, width, height);
     let unlock_status = unsafe { GdipBitmapUnlockBits(bitmap, &mut data) };
     ensure_gdiplus_ok(unlock_status, "could not unlock PNG pixels")?;
-    result.map(|pixels| PreparedFrame {
-        width,
-        height,
-        hitbox: FrameHitbox::from_pixels(width, height, &pixels),
-        pixels,
-    })
+    result.map(|pixels| PreparedFrame { width, height, pixels })
 }
 
 fn copy_premultiplied_pixels(data: &BitmapData, width: u32, height: u32) -> Result<Vec<u8>, AssetError> {
@@ -348,7 +279,8 @@ fn ensure_gdiplus_ok(status: Status, operation: &str) -> Result<(), AssetError> 
 
 #[cfg(test)]
 mod tests {
-    use super::{FrameHitbox, copy_premultiplied_pixels, load_character_catalog, load_manifest, premultiply};
+    use super::{copy_premultiplied_pixels, load_character, load_manifest, premultiply};
+    use std::collections::BTreeSet;
     use std::ptr::null_mut;
     use windows::Win32::Graphics::GdiPlus::BitmapData;
 
@@ -435,47 +367,36 @@ mod tests {
     #[test]
     fn loads_embedded_frames_for_every_manifest_animation() {
         let gdi_plus = crate::gdi::GdiPlus::new().expect("GDI+ should initialize");
-        let catalog = load_character_catalog(&gdi_plus).expect("checked-in pet assets should load");
-        let assets = catalog.get("cat").expect("cat should be present");
-
-        assert_eq!(assets.idle.frames.len(), 10);
-        assert_eq!(assets.walk.frames.len(), 10);
-        assert_eq!(assets.jump.frames.len(), 8);
-        assert_eq!(
-            assets.idle.frames[0].pixels.len(),
-            (assets.idle.frames[0].width * assets.idle.frames[0].height * 4) as usize
-        );
-        assert!(assets.idle.frames[0].pixels.chunks_exact(4).any(|pixel| pixel[3] != 0));
-
-        for character in ["cat", "dog"] {
-            let animations = catalog.get(character).unwrap();
-            assert_eq!(animations.idle.frames.len(), 10);
-            assert_eq!(animations.walk.frames.len(), 10);
-            assert_eq!(animations.jump.frames.len(), 8);
-            assert!(animations.jump.frames.iter().all(|frame| frame.hitbox.is_some()));
-        }
         // Every embedded frame must belong to one of the three runtime animations.
         let manifest = load_manifest().unwrap();
-        let mut frame_count = 0;
-        for character in manifest.characters.values() {
+        let mut frame_paths = BTreeSet::new();
+        for (id, character) in &manifest.characters {
+            let assets = load_character(id, &gdi_plus).expect("checked-in pet assets should load");
             assert_eq!(
                 character.animations.keys().map(String::as_str).collect::<Vec<_>>(),
                 ["idle", "jump", "walk"]
             );
-            for animation in character.animations.values() {
-                for index in 1..=animation.frame_count {
+            for (name, prepared) in [("idle", &assets.idle), ("jump", &assets.jump), ("walk", &assets.walk)] {
+                let animation = &character.animations[name];
+                assert_eq!(prepared.frames.len(), animation.frame_count);
+                for (index, frame) in prepared.frames.iter().enumerate() {
                     let path = character
                         .path
-                        .join(animation.pattern.replace("{index}", &index.to_string()));
-                    let frame = super::load_png_frame(&path).unwrap();
+                        .join(animation.pattern.replace("{index}", &(index + 1).to_string()));
+                    assert!(frame_paths.insert(path.to_string_lossy().replace('\\', "/")));
                     assert!(frame.width > 0 && frame.height > 0);
                     assert_eq!(frame.pixels.len(), (frame.width * frame.height * 4) as usize);
-                    frame_count += 1;
+                    assert!(frame.pixels.chunks_exact(4).any(|pixel| pixel[3] != 0));
                 }
             }
         }
-        assert_eq!(frame_count, super::EMBEDDED_FRAMES.len());
-        assert_eq!(frame_count, 56);
+        let embedded_paths = super::EMBEDDED_FRAMES
+            .iter()
+            .map(|(path, _)| path.to_string())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(frame_paths, embedded_paths);
+        assert_eq!(frame_paths.len(), super::EMBEDDED_FRAMES.len());
+        assert_eq!(frame_paths.len(), 56);
         assert!(super::decode_png_frame(b"not a PNG").is_err());
     }
 
@@ -486,8 +407,8 @@ mod tests {
     }
 
     #[test]
-    fn loads_every_character_into_the_catalog() {
-        let manifest = load_manifest().expect("checked-in character catalog should load");
+    fn manifest_contains_both_characters() {
+        let manifest = load_manifest().expect("checked-in character manifest should load");
 
         assert_eq!(
             manifest.characters.keys().map(String::as_str).collect::<Vec<_>>(),
@@ -532,21 +453,5 @@ mod tests {
         };
 
         assert!(copy_premultiplied_pixels(&data, 1, 1).is_err());
-    }
-
-    #[test]
-    fn builds_a_per_frame_hitbox_from_alpha_pixels() {
-        let pixels = [0, 0, 0, 0, 0, 0, 0, 64, 0, 0, 0, 0, 0, 0, 0, 255];
-        let hitbox = FrameHitbox::from_pixels(2, 2, &pixels).expect("opaque pixels should have a hitbox");
-
-        assert_eq!(
-            hitbox,
-            FrameHitbox {
-                left: 1,
-                top: 0,
-                right: 2,
-                bottom: 2
-            }
-        );
     }
 }

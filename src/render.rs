@@ -233,20 +233,10 @@ impl LayeredRenderer {
 #[cfg(test)]
 mod tests {
     use super::{CachedSurface, PixelSurface, SurfaceError, SurfacePoint};
-    use crate::asset::{FrameHitbox, PreparedFrame};
+    use crate::asset::PreparedFrame;
 
     fn frame(width: u32, height: u32, pixels: Vec<u8>) -> PreparedFrame {
-        PreparedFrame {
-            width,
-            height,
-            pixels,
-            hitbox: Some(FrameHitbox {
-                left: 0,
-                top: 0,
-                right: width,
-                bottom: height,
-            }),
-        }
+        PreparedFrame { width, height, pixels }
     }
 
     #[test]
