@@ -23,6 +23,7 @@ mod window_proc;
 
 use crate::app_state::AppState;
 use crate::config::Config;
+use crate::gdi::GdiPlus;
 use crate::settings::{create_about_button, create_settings_button};
 use crate::timer_panel::{create_timer_panel, register_timer_panel_class, resize_timer_panel};
 use windows::Win32::{
@@ -46,7 +47,6 @@ use tray_icon::TrayIcon;
 use ui::{
     button::{create_control_buttons, layout_control_buttons_for, register_button_class, update_control_buttons_for},
     font::{common_gui_font, release_common_gui_fonts},
-    gdi_plus::GdiPlus,
     theme::apply_theme,
 };
 use window_proc::{

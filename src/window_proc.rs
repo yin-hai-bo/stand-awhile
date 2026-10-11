@@ -6,6 +6,7 @@ use std::sync::{
 use crate::about::show_about_window;
 use crate::app_state::PetPosition;
 use crate::asset::load_character;
+use crate::gdi::GdiPlus;
 use crate::pet_window::{
     PET_COMMAND_ABOUT, PET_COMMAND_ACKNOWLEDGE, PET_COMMAND_EXIT, PET_COMMAND_HIDDEN, PET_COMMAND_SETTINGS,
     PET_COMMAND_SHOW_MAIN, PET_COMMAND_START, PetWindow, WM_PET_COMMAND,
@@ -18,7 +19,6 @@ use crate::settings::{
 };
 use crate::timer_panel::resize_timer_panel;
 use crate::ui::font::common_gui_font;
-use crate::ui::gdi_plus::GdiPlus;
 use crate::ui::{
     button::{
         ControlButton, button_from_command, layout_control_buttons_for, refresh_control_buttons_for,
@@ -1008,7 +1008,7 @@ mod tests {
 
     #[test]
     fn background_start_counts_down_and_reminds_with_either_auto_hide_preference() {
-        use crate::{startup::StartupMode, ui::gdi_plus::GdiPlus};
+        use crate::{gdi::GdiPlus, startup::StartupMode};
         use windows::Win32::{
             System::LibraryLoader::GetModuleHandleW,
             UI::WindowsAndMessaging::{

@@ -1087,7 +1087,7 @@ mod tests {
     #[ignore = "CPU benchmark; run explicitly on an otherwise idle machine"]
     fn visible_pet_render_cpu_budget() {
         use super::*;
-        use crate::{asset::load_character_catalog, ui::gdi_plus::GdiPlus};
+        use crate::{asset::load_character_catalog, gdi::GdiPlus};
         use windows::Win32::{
             Foundation::FILETIME,
             System::{
@@ -1157,7 +1157,7 @@ mod tests {
     #[test]
     fn hidden_pet_has_no_animation_timer_work() {
         use super::*;
-        use crate::{asset::load_character_catalog, ui::gdi_plus::GdiPlus};
+        use crate::{asset::load_character_catalog, gdi::GdiPlus};
         use windows::Win32::{
             System::LibraryLoader::GetModuleHandleW,
             UI::WindowsAndMessaging::{DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, SendMessageW},

@@ -17,7 +17,7 @@ use windows::{
 
 use crate::{
     animation::{AnimationClip, Frame, LoopMode},
-    ui::GdiPlus,
+    gdi::GdiPlus,
 };
 
 const PIXEL_FORMAT_32BPP_ARGB: i32 = (PixelFormatAlpha | PixelFormatCanonical | PixelFormatGDI | (32 << 8) | 10) as i32;
@@ -376,7 +376,7 @@ mod tests {
 
     #[test]
     fn loads_only_the_selected_character_and_falls_back_to_cat() {
-        let gdi_plus = crate::ui::GdiPlus::new().unwrap();
+        let gdi_plus = crate::gdi::GdiPlus::new().unwrap();
         for (id, width, height) in [("cat", 542, 474), ("dog", 547, 481), ("unknown", 542, 474)] {
             let animations = super::load_character(id, &gdi_plus).unwrap();
             let frames = animations
@@ -399,7 +399,7 @@ mod tests {
 
     #[test]
     fn loads_embedded_frames_for_every_manifest_animation() {
-        let gdi_plus = crate::ui::GdiPlus::new().expect("GDI+ should initialize");
+        let gdi_plus = crate::gdi::GdiPlus::new().expect("GDI+ should initialize");
         let catalog = load_character_catalog(&gdi_plus).expect("checked-in pet assets should load");
         let assets = catalog.get("cat").expect("cat should be present");
 
