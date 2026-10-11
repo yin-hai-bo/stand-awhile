@@ -50,6 +50,7 @@ pub const PET_COMMAND_EXIT: usize = 3;
 pub const PET_COMMAND_START: usize = 4;
 pub const PET_COMMAND_SETTINGS: usize = 5;
 pub const PET_COMMAND_ABOUT: usize = 6;
+pub const PET_COMMAND_HIDDEN: usize = 7;
 const PET_MENU_START: usize = 1;
 const PET_MENU_SHOW_MAIN: usize = 2;
 const PET_MENU_EXIT: usize = 3;
@@ -112,6 +113,44 @@ pub struct PetWindow {
 }
 
 impl PetWindow {
+    pub(crate) fn hwnd(&self) -> HWND {
+        self.hwnd
+    }
+
+    pub(crate) fn position(&self) -> Result<PetPosition> {
+        let state = state_mut(self.hwnd).ok_or_else(Error::from_win32)?;
+        let position = state
+            .show_animation
+            .as_ref()
+            .map(|animation| animation.target)
+            .or_else(|| {
+                state
+                    .hide_animation
+                    .as_ref()
+                    .map(|animation| animation.restore_position)
+            })
+            .unwrap_or(state.position);
+        persistent_position(self.hwnd, position)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn finish_hide_for_test(&self) {
+        state_mut(self.hwnd)
+            .unwrap()
+            .hide_animation
+            .as_mut()
+            .unwrap()
+            .started_at = Instant::now() - Duration::from_millis(HIDE_ANIMATION_DURATION_MS as u64);
+        unsafe {
+            windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+                self.hwnd,
+                WM_TIMER,
+                Some(WPARAM(PET_TIMER_ID)),
+                None,
+            );
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn test_hwnd(&self) -> HWND {
         self.hwnd
@@ -769,6 +808,13 @@ fn update_hide_animation(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
         state.position = restore_position;
         unsafe {
             let _ = ShowWindow(hwnd, SW_HIDE);
+            // Release resources through the owner after this callback returns.
+            let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                Some(state.owner),
+                WM_PET_COMMAND,
+                WPARAM(PET_COMMAND_HIDDEN),
+                LPARAM(hwnd.0 as isize),
+            );
         }
     }
     Ok(())

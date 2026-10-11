@@ -2,7 +2,7 @@
 
 ## Implementation map
 
-The application is Rust with native Win32 GUI APIs. Startup asset decoding,
+The application is Rust with native Win32 GUI APIs. On-demand asset decoding,
 window messages, animation updates, and rendering run on the main thread.
 
 | Module | Responsibility |
@@ -13,12 +13,20 @@ window messages, animation updates, and rendering run on the main thread.
 | `autostart.rs` | Current-user Run entry synchronization, configuration rollback and startup error messages |
 | `window_proc.rs` | Countdown state, Pet commands, settings application, main window lifetime |
 | `settings.rs`, `config.rs` | Settings UI and UTF-8 JSON persistence in Roaming AppData |
-| `asset.rs`, `build.rs` | Embedded manifest and PNGs; in-memory GDI+ decoding and character catalog |
+| `asset.rs`, `build.rs` | Embedded manifest and PNGs; in-memory GDI+ decoding of the selected character |
 | `animation.rs` | Pure `Instant`-driven frame selection, looping, pause/resume, completion |
 | `pet_window.rs` | Pet window, clip transitions, entrance/exit motion, dragging, alpha hit testing, position persistence |
 | `render.rs`, `gdi/` | CPU pixel surfaces, DPI resampling, reusable DIBs, `UpdateLayeredWindow` |
 | `speech_bubble.rs`, `speech_bubble_window.rs` | Fixed message cycle and localized bubble window |
 | `timer_panel.rs`, `tray_icon.rs`, `about.rs`, `ui/` | Countdown display, tray controls, About, Win32 controls and drawing |
+
+Startup does not decode animation frames or create the Pet window. At countdown
+completion, the main thread decodes only the selected character and moves its
+animations into a newly created Pet window. Immediate hiding or completion of
+the exit animation destroys that window and releases its frames, scaled cache,
+and render surfaces. The next reminder reloads the selected character and
+restores the last position. Changing character while a Pet exists loads its
+replacement synchronously; without a Pet, it only updates the selection.
 
 The main countdown uses a one-second Win32 timer to decrement its remaining
 seconds. Pet animation uses a 16 ms window timer only while the Pet window
@@ -73,7 +81,8 @@ window.
 
 A named ordered sequence of frames with a frame duration and loop mode. The
 runtime uses `idle`, `walk`, and `jump` for either Cat or Dog. Only these clips'
-56 PNG frames are retained and embedded, and the runtime catalog decodes all of them.
+56 PNG frames are retained and embedded; each reminder decodes only the selected
+character's 28 frames, without cloning their pixel buffers.
 
 ### Animation player
 

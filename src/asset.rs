@@ -99,10 +99,12 @@ pub struct CharacterAnimations {
     pub jump: PreparedAnimation,
 }
 
+#[cfg(test)]
 pub struct CharacterCatalog {
     characters: BTreeMap<String, CharacterAnimations>,
 }
 
+#[cfg(test)]
 impl CharacterCatalog {
     pub fn get(&self, character_id: &str) -> Option<&CharacterAnimations> {
         self.characters.get(character_id)
@@ -130,6 +132,17 @@ struct AnimationManifest {
     loop_mode: bool,
 }
 
+pub fn load_character(character_id: &str, _gdi_plus: &GdiPlus) -> Result<CharacterAnimations, AssetError> {
+    let manifest = load_manifest()?;
+    let character = manifest
+        .characters
+        .get(character_id)
+        .or_else(|| manifest.characters.get("cat"))
+        .ok_or_else(|| AssetError::InvalidManifest("manifest has no default character".to_owned()))?;
+    load_character_animations(character, manifest.default_frame_duration_ms)
+}
+
+#[cfg(test)]
 pub fn load_character_catalog(_gdi_plus: &GdiPlus) -> Result<CharacterCatalog, AssetError> {
     let manifest = load_manifest()?;
     let characters = manifest
@@ -359,6 +372,29 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(paths.first().expect("first frame"), "Idle (1).png");
         assert_eq!(paths.last().expect("last frame"), "Idle (10).png");
+    }
+
+    #[test]
+    fn loads_only_the_selected_character_and_falls_back_to_cat() {
+        let gdi_plus = crate::ui::GdiPlus::new().unwrap();
+        for (id, width, height) in [("cat", 542, 474), ("dog", 547, 481), ("unknown", 542, 474)] {
+            let animations = super::load_character(id, &gdi_plus).unwrap();
+            let frames = animations
+                .idle
+                .frames
+                .iter()
+                .chain(&animations.walk.frames)
+                .chain(&animations.jump.frames);
+            let mut count = 0;
+            let mut bytes = 0;
+            for frame in frames {
+                assert_eq!((frame.width, frame.height), (width, height));
+                count += 1;
+                bytes += frame.pixels.len();
+            }
+            assert_eq!(count, 28);
+            assert_eq!(bytes, width as usize * height as usize * 4 * 28);
+        }
     }
 
     #[test]

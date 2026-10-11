@@ -22,9 +22,7 @@ mod ui;
 mod window_proc;
 
 use crate::app_state::AppState;
-use crate::asset::load_character_catalog;
 use crate::config::Config;
-use crate::pet_window::PetWindow;
 use crate::settings::{create_about_button, create_settings_button};
 use crate::timer_panel::{create_timer_panel, register_timer_panel_class, resize_timer_panel};
 use windows::Win32::{
@@ -141,26 +139,6 @@ fn run() -> Result<()> {
     let timer_panel = create_timer_panel(hwnd, instance)?;
     resize_timer_panel(timer_panel, hwnd)?;
     let gdi_plus = GdiPlus::new()?;
-    let catalog = load_character_catalog(&gdi_plus).map_err(|error| {
-        Error::new(
-            windows::core::HRESULT(0x8000_4005u32 as i32),
-            format!("Could not load pet assets: {error}"),
-        )
-    })?;
-    let animations = catalog
-        .get(&config.character)
-        .or_else(|| catalog.get("cat"))
-        .ok_or_else(Error::from_win32)?
-        .clone();
-    let pet_window = PetWindow::create(
-        instance,
-        hwnd,
-        animations,
-        language,
-        app_state.pet_position,
-        tray_menu_settings_text(language),
-    )?;
-    pet_window.set_language(language);
     let control_buttons = create_control_buttons(timer_panel, instance)?;
     let tray_icon = TrayIcon::create(
         hwnd,
@@ -186,8 +164,10 @@ fn run() -> Result<()> {
             theme,
             tray_icon,
             tray_when_close: config.tray_when_close,
-            pet_window,
-            character_catalog: catalog,
+            pet_window: None,
+            gdi_plus,
+            character: config.character,
+            pet_position: app_state.pet_position,
             components: Vec::new(),
             common_gui_font,
             settings_button,

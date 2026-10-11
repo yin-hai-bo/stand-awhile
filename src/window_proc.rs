@@ -4,10 +4,11 @@ use std::sync::{
 };
 
 use crate::about::show_about_window;
-use crate::asset::CharacterCatalog;
+use crate::app_state::PetPosition;
+use crate::asset::load_character;
 use crate::pet_window::{
-    PET_COMMAND_ABOUT, PET_COMMAND_ACKNOWLEDGE, PET_COMMAND_EXIT, PET_COMMAND_SETTINGS, PET_COMMAND_SHOW_MAIN,
-    PET_COMMAND_START, PetWindow, WM_PET_COMMAND,
+    PET_COMMAND_ABOUT, PET_COMMAND_ACKNOWLEDGE, PET_COMMAND_EXIT, PET_COMMAND_HIDDEN, PET_COMMAND_SETTINGS,
+    PET_COMMAND_SHOW_MAIN, PET_COMMAND_START, PetWindow, WM_PET_COMMAND,
 };
 use crate::settings::{
     ABOUT_BUTTON_ID, SETTINGS_APPLIED_ID, SETTINGS_BUTTON_ID, SETTINGS_CHANGED_ID, SETTINGS_CLOSED_ID,
@@ -17,6 +18,7 @@ use crate::settings::{
 };
 use crate::timer_panel::resize_timer_panel;
 use crate::ui::font::common_gui_font;
+use crate::ui::gdi_plus::GdiPlus;
 use crate::ui::{
     button::{
         ControlButton, button_from_command, layout_control_buttons_for, refresh_control_buttons_for,
@@ -70,8 +72,10 @@ pub struct WindowState {
     pub theme: Theme,
     pub tray_icon: TrayIcon,
     pub tray_when_close: bool,
-    pub pet_window: PetWindow,
-    pub character_catalog: CharacterCatalog,
+    pub pet_window: Option<PetWindow>,
+    pub gdi_plus: GdiPlus,
+    pub character: String,
+    pub pet_position: Option<PetPosition>,
     pub components: Vec<Box<dyn Component>>,
     pub common_gui_font: Option<HFONT>,
     pub settings_button: HWND,
@@ -248,6 +252,7 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
         WM_PET_COMMAND => {
             match wparam.0 {
                 PET_COMMAND_ACKNOWLEDGE => acknowledge_pet(hwnd),
+                PET_COMMAND_HIDDEN => release_hidden_pet(hwnd, HWND(lparam.0 as *mut _)),
                 PET_COMMAND_START => activate_button(hwnd, ControlButton::Play),
                 PET_COMMAND_SETTINGS => open_settings(hwnd),
                 PET_COMMAND_ABOUT => open_about(hwnd),
@@ -569,8 +574,53 @@ fn stop_timer(hwnd: HWND) {
 }
 
 fn show_pet_reminder(hwnd: HWND) {
-    if let Some(state) = window_state(hwnd) {
-        let _ = state.pet_window.show_reminder();
+    if let Err(error) = try_show_pet_reminder(hwnd) {
+        let text: Vec<u16> = error.to_string().encode_utf16().chain([0]).collect();
+        unsafe {
+            use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
+            let _ = MessageBoxW(
+                Some(hwnd),
+                windows::core::PCWSTR(text.as_ptr()),
+                windows::core::w!("Stand Awhile"),
+                MB_OK | MB_ICONERROR,
+            );
+        }
+    }
+}
+
+fn try_show_pet_reminder(hwnd: HWND) -> windows::core::Result<()> {
+    let Some(state) = window_state_mut(hwnd) else {
+        return Ok(());
+    };
+    if state.pet_window.is_none() {
+        let animations = load_character(&state.character, &state.gdi_plus).map_err(|error| {
+            windows::core::Error::new(windows::core::HRESULT(0x8000_4005u32 as i32), error.to_string())
+        })?;
+        let instance: HINSTANCE = unsafe { windows::Win32::System::LibraryLoader::GetModuleHandleW(None)? }.into();
+        let pet = PetWindow::create(
+            instance,
+            hwnd,
+            animations,
+            state.language,
+            state.pet_position.clone(),
+            crate::tray_menu_settings_text(state.language),
+        )?;
+        pet.set_language(state.language);
+        state.pet_window = Some(pet);
+    }
+    state.pet_window.as_ref().unwrap().show_reminder()
+}
+
+fn release_hidden_pet(hwnd: HWND, pet_hwnd: HWND) {
+    let Some(state) = window_state_mut(hwnd) else { return };
+    if let Some(pet) = state.pet_window.as_ref() {
+        if pet.hwnd() != pet_hwnd || unsafe { IsWindowVisible(pet_hwnd).as_bool() } {
+            return;
+        }
+        if let Ok(position) = pet.position() {
+            state.pet_position = Some(position);
+        }
+        state.pet_window = None;
     }
 }
 
@@ -587,8 +637,14 @@ fn acknowledge_pet(hwnd: HWND) {
 }
 
 fn hide_pet(hwnd: HWND) {
-    if let Some(state) = window_state(hwnd) {
-        state.pet_window.hide();
+    let pet_hwnd = window_state(hwnd)
+        .and_then(|state| state.pet_window.as_ref())
+        .map(|pet| {
+            pet.hide();
+            pet.hwnd()
+        });
+    if let Some(pet_hwnd) = pet_hwnd {
+        release_hidden_pet(hwnd, pet_hwnd);
     }
 }
 
@@ -604,7 +660,7 @@ fn hide_pet_animated(hwnd: HWND) -> windows::core::Result<()> {
     let Some(state) = window_state(hwnd) else {
         return Ok(());
     };
-    state.pet_window.hide_animated()
+    state.pet_window.as_ref().map_or(Ok(()), PetWindow::hide_animated)
 }
 
 fn initial_remaining_seconds() -> u32 {
@@ -900,7 +956,9 @@ fn apply_saved_settings(hwnd: HWND) {
             crate::tray_menu_about_text(language),
             crate::tray_menu_exit_text(language),
         );
-        state.pet_window.set_language(language);
+        if let Some(pet) = state.pet_window.as_ref() {
+            pet.set_language(language);
+        }
         unsafe {
             let title = crate::i18n::main_window_title(language)
                 .encode_utf16()
@@ -914,12 +972,13 @@ fn apply_saved_settings(hwnd: HWND) {
         update_settings_button_font(state.about_button, font);
         update_settings_button_font(state.auto_hide_checkbox, font);
         set_settings_button_text(state.about_button, crate::about_button_text(language));
-        if let Some(animations) = state
-            .character_catalog
-            .get(&config.character)
-            .or_else(|| state.character_catalog.get("cat"))
-        {
-            let _ = state.pet_window.set_animations(animations.clone());
+        if state.character != config.character {
+            state.character = config.character;
+            if let Some(pet) = state.pet_window.as_ref() {
+                if let Ok(animations) = load_character(&state.character, &state.gdi_plus) {
+                    let _ = pet.set_animations(animations);
+                }
+            }
         }
     }
     let settings_visible = window_state(hwnd)
@@ -957,7 +1016,6 @@ mod tests {
             },
         };
         let _guard = TIMER_TEST_LOCK.lock().unwrap();
-        let gdi_plus = GdiPlus::new().unwrap();
         unsafe {
             let instance: HINSTANCE = GetModuleHandleW(None).unwrap().into();
             let class = WNDCLASSW {
@@ -984,17 +1042,6 @@ mod tests {
                     None,
                 )
                 .unwrap();
-                let catalog = crate::asset::load_character_catalog(&gdi_plus).unwrap();
-                let pet_window = PetWindow::create(
-                    instance,
-                    hwnd,
-                    catalog.get("cat").unwrap().clone(),
-                    Language::English,
-                    None,
-                    "Settings",
-                )
-                .unwrap();
-                let pet_hwnd = pet_window.test_hwnd();
                 let tray_icon = TrayIcon::create(
                     hwnd,
                     LoadIconW(None, IDI_APPLICATION).unwrap(),
@@ -1033,8 +1080,10 @@ mod tests {
                         theme: Theme::System,
                         tray_icon,
                         tray_when_close: true,
-                        pet_window,
-                        character_catalog: catalog,
+                        pet_window: None,
+                        gdi_plus: GdiPlus::new().unwrap(),
+                        character: "cat".to_owned(),
+                        pet_position: None,
                         components: Vec::new(),
                         common_gui_font: None,
                         settings_button: controls[0],
@@ -1066,13 +1115,13 @@ mod tests {
                 activate_button(hwnd, ControlButton::Play);
                 assert_eq!(remaining_seconds(), 2);
                 assert!(!IsWindowVisible(hwnd).as_bool());
-                assert!(!IsWindowVisible(pet_hwnd).as_bool());
+                assert!(window_state(hwnd).unwrap().pet_window.is_none());
 
                 SendMessageW(hwnd, WM_TIMER, Some(WPARAM(TIMER_ID)), None);
                 assert_eq!(remaining_seconds(), 1);
                 crate::startup::handle_existing_instance(true).unwrap();
                 assert!(!IsWindowVisible(hwnd).as_bool());
-                assert!(!IsWindowVisible(pet_hwnd).as_bool());
+                assert!(window_state(hwnd).unwrap().pet_window.is_none());
                 assert_eq!(*TIMER_STATE.lock().unwrap(), TimerState::Running);
                 assert_eq!(remaining_seconds(), 1);
                 SendMessageW(
@@ -1084,12 +1133,13 @@ mod tests {
                 assert!(IsWindowVisible(hwnd).as_bool());
                 assert_eq!(remaining_seconds(), 1);
                 assert_eq!(*TIMER_STATE.lock().unwrap(), TimerState::Running);
-                assert!(!IsWindowVisible(pet_hwnd).as_bool());
+                assert!(window_state(hwnd).unwrap().pet_window.is_none());
 
                 SendMessageW(hwnd, WM_TIMER, Some(WPARAM(TIMER_ID)), None);
                 assert_eq!(*TIMER_STATE.lock().unwrap(), TimerState::Finished);
                 assert_eq!(window_state(hwnd).unwrap().tray_icon.test_tooltip(), "Stand Awhile");
                 assert_eq!(REMAINING_SECONDS.load(Ordering::Relaxed), 0);
+                let pet_hwnd = window_state(hwnd).unwrap().pet_window.as_ref().unwrap().test_hwnd();
                 assert!(IsWindowVisible(pet_hwnd).as_bool());
                 let _ = ShowWindow(hwnd, SW_HIDE);
                 crate::startup::handle_existing_instance(true).unwrap();
@@ -1097,6 +1147,49 @@ mod tests {
                 assert!(IsWindowVisible(pet_hwnd).as_bool());
                 assert_eq!(*TIMER_STATE.lock().unwrap(), TimerState::Finished);
                 assert_eq!(REMAINING_SECONDS.load(Ordering::Relaxed), 0);
+                // A queued hide notification must not release a visible reminder.
+                release_hidden_pet(hwnd, pet_hwnd);
+                assert!(window_state(hwnd).unwrap().pet_window.is_some());
+                let position = window_state(hwnd)
+                    .unwrap()
+                    .pet_window
+                    .as_ref()
+                    .unwrap()
+                    .position()
+                    .unwrap();
+                hide_pet(hwnd);
+                assert!(window_state(hwnd).unwrap().pet_window.is_none());
+                assert!(!IsWindow(Some(pet_hwnd)).as_bool());
+                assert_eq!(window_state(hwnd).unwrap().pet_position.as_ref(), Some(&position));
+                // The next reminder decodes only the newly selected character.
+                window_state_mut(hwnd).unwrap().character = "dog".to_owned();
+                try_show_pet_reminder(hwnd).unwrap();
+                let pet_hwnd = window_state(hwnd).unwrap().pet_window.as_ref().unwrap().test_hwnd();
+                assert!(IsWindowVisible(pet_hwnd).as_bool());
+                hide_pet_animated(hwnd).unwrap();
+                assert!(window_state(hwnd).unwrap().pet_window.is_some());
+                window_state(hwnd)
+                    .unwrap()
+                    .pet_window
+                    .as_ref()
+                    .unwrap()
+                    .finish_hide_for_test();
+                assert!(!IsWindowVisible(pet_hwnd).as_bool());
+                let mut hidden_message = MSG::default();
+                assert!(
+                    PeekMessageW(
+                        &mut hidden_message,
+                        Some(hwnd),
+                        WM_PET_COMMAND,
+                        WM_PET_COMMAND,
+                        PM_REMOVE
+                    )
+                    .as_bool()
+                );
+                assert_eq!(hidden_message.wParam.0, PET_COMMAND_HIDDEN);
+                windows::Win32::UI::WindowsAndMessaging::DispatchMessageW(&hidden_message);
+                assert!(window_state(hwnd).unwrap().pet_window.is_none());
+                assert!(!IsWindow(Some(pet_hwnd)).as_bool());
                 DestroyWindow(hwnd).unwrap();
                 let mut message = MSG::default();
                 let _ = PeekMessageW(&mut message, None, WM_QUIT, WM_QUIT, PM_REMOVE);
