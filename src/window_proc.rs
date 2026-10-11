@@ -5,7 +5,7 @@ use std::sync::{
 
 use crate::about::show_about_window;
 use crate::app_state::PetPosition;
-use crate::asset::load_character;
+use crate::asset::{CharacterAnimations, load_character};
 use crate::gdi::GdiPlus;
 use crate::pet_window::{
     PET_COMMAND_ABOUT, PET_COMMAND_ACKNOWLEDGE, PET_COMMAND_EXIT, PET_COMMAND_HIDDEN, PET_COMMAND_SETTINGS,
@@ -575,16 +575,20 @@ fn stop_timer(hwnd: HWND) {
 
 fn show_pet_reminder(hwnd: HWND) {
     if let Err(error) = try_show_pet_reminder(hwnd) {
-        let text: Vec<u16> = error.to_string().encode_utf16().chain([0]).collect();
-        unsafe {
-            use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
-            let _ = MessageBoxW(
-                Some(hwnd),
-                windows::core::PCWSTR(text.as_ptr()),
-                windows::core::w!("Stand Awhile"),
-                MB_OK | MB_ICONERROR,
-            );
-        }
+        show_pet_error(hwnd, &error);
+    }
+}
+
+fn show_pet_error(hwnd: HWND, error: &windows::core::Error) {
+    let text: Vec<u16> = error.to_string().encode_utf16().chain([0]).collect();
+    unsafe {
+        use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
+        let _ = MessageBoxW(
+            Some(hwnd),
+            windows::core::PCWSTR(text.as_ptr()),
+            windows::core::w!("Stand Awhile"),
+            MB_OK | MB_ICONERROR,
+        );
     }
 }
 
@@ -606,7 +610,9 @@ fn try_show_pet_reminder(hwnd: HWND) -> windows::core::Result<()> {
             crate::tray_menu_settings_text(state.language),
         )?;
         pet.set_language(state.language);
+        pet.show_reminder()?;
         state.pet_window = Some(pet);
+        return Ok(());
     }
     state.pet_window.as_ref().unwrap().show_reminder()
 }
@@ -972,19 +978,43 @@ fn apply_saved_settings(hwnd: HWND) {
         update_settings_button_font(state.about_button, font);
         update_settings_button_font(state.auto_hide_checkbox, font);
         set_settings_button_text(state.about_button, crate::about_button_text(language));
-        if state.character != config.character {
-            state.character = config.character;
-            if let Some(pet) = state.pet_window.as_ref() {
-                if let Ok(animations) = load_character(&state.character, &state.gdi_plus) {
-                    let _ = pet.set_animations(animations);
-                }
-            }
-        }
+    }
+    let result = window_state_mut(hwnd).map(|state| {
+        change_character(
+            &mut state.character,
+            state.pet_window.as_ref(),
+            &config.character,
+            || {
+                load_character(&config.character, &state.gdi_plus).map_err(|error| {
+                    windows::core::Error::new(windows::core::HRESULT(0x8000_4005u32 as i32), error.to_string())
+                })
+            },
+        )
+    });
+    if let Some(Err(error)) = result {
+        show_pet_error(hwnd, &error);
     }
     let settings_visible = window_state(hwnd)
         .map(|state| unsafe { IsWindowVisible(state.settings_panel).as_bool() })
         .unwrap_or(false);
     set_settings_button_text_for(hwnd, settings_visible);
+}
+
+fn change_character(
+    current: &mut String,
+    pet: Option<&PetWindow>,
+    selected: &str,
+    load: impl FnOnce() -> windows::core::Result<CharacterAnimations>,
+) -> windows::core::Result<()> {
+    if current == selected {
+        return Ok(());
+    }
+    if let Some(pet) = pet {
+        pet.set_animations(load()?)?;
+    }
+    // The saved selection may differ from the loaded character after a failure.
+    *current = selected.to_owned();
+    Ok(())
 }
 
 fn settings_menu_text(language: Language) -> &'static str {
@@ -1005,6 +1035,68 @@ fn settings_back_text(language: Language) -> &'static str {
 mod tests {
     use super::*;
     static TIMER_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn character_selection_changes_only_after_successful_load_and_replacement() {
+        use crate::{
+            animation::{AnimationClip, Frame, LoopMode},
+            asset::{PreparedAnimation, PreparedFrame},
+        };
+        use std::time::Duration;
+        let animation = PreparedAnimation {
+            clip: AnimationClip::new(vec![Frame { id: 0 }], Duration::from_millis(120), LoopMode::Loop).unwrap(),
+            frames: vec![PreparedFrame {
+                width: 1,
+                height: 1,
+                pixels: vec![0, 0, 0, 255],
+                hitbox: None,
+            }],
+        };
+        let original = CharacterAnimations {
+            idle: animation.clone(),
+            walk: animation.clone(),
+            jump: animation,
+        };
+        let instance = unsafe {
+            windows::Win32::System::LibraryLoader::GetModuleHandleW(None)
+                .unwrap()
+                .into()
+        };
+        let pet = PetWindow::create(
+            instance,
+            HWND::default(),
+            original.clone(),
+            Language::English,
+            None,
+            "Settings",
+        )
+        .unwrap();
+        pet.show_reminder().unwrap();
+        let mut character = "cat".to_owned();
+        assert!(
+            change_character(&mut character, Some(&pet), "dog", || Err(
+                windows::core::Error::from_win32()
+            ))
+            .is_err()
+        );
+        assert_eq!(character, "cat");
+        let mut invalid = original.clone();
+        invalid.jump.frames[0].pixels.clear();
+        assert!(change_character(&mut character, Some(&pet), "dog", || Ok(invalid)).is_err());
+        assert_eq!(character, "cat");
+        pet.show_reminder().unwrap();
+        change_character(&mut character, Some(&pet), "dog", || Ok(original)).unwrap();
+        assert_eq!(character, "dog");
+        change_character(&mut character, Some(&pet), "dog", || {
+            panic!("same character must not reload")
+        })
+        .unwrap();
+        change_character(&mut character, None, "cat", || {
+            panic!("hidden pet must not decode frames")
+        })
+        .unwrap();
+        assert_eq!(character, "cat");
+    }
 
     #[test]
     fn background_start_counts_down_and_reminds_with_either_auto_hide_preference() {

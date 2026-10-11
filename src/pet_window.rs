@@ -166,7 +166,7 @@ impl PetWindow {
     ) -> Result<Self> {
         register_class(instance)?;
 
-        let frame = &animations.walk.frames[0];
+        let frame = animations.walk.frames.first().ok_or_else(Error::from_win32)?;
         let width = i32::try_from(frame.width).map_err(|_| Error::from_win32())?;
         let height = i32::try_from(frame.height).map_err(|_| Error::from_win32())?;
         let position = saved_position
@@ -189,6 +189,8 @@ impl PetWindow {
                 None,
             )
         }?;
+        // Own the HWND immediately so every later initialization error destroys it.
+        let pet = Self { hwnd };
 
         let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
         let mut surface = pet_surface(frame, dpi)?;
@@ -199,24 +201,8 @@ impl PetWindow {
             monitor_work_area(hwnd)?,
         );
 
-        let renderer = match LayeredRenderer::new(hwnd) {
-            Ok(renderer) => renderer,
-            Err(error) => {
-                unsafe {
-                    let _ = DestroyWindow(hwnd);
-                }
-                return Err(error);
-            }
-        };
-        let speech_bubble = match SpeechBubbleController::create(instance, hwnd, language) {
-            Ok(speech_bubble) => speech_bubble,
-            Err(error) => {
-                unsafe {
-                    let _ = DestroyWindow(hwnd);
-                }
-                return Err(error);
-            }
-        };
+        let renderer = LayeredRenderer::new(hwnd)?;
+        let speech_bubble = SpeechBubbleController::create(instance, hwnd, language)?;
         let now = Instant::now();
         let player = AnimationPlayer::new(animations.walk.clip.clone());
         attach_state(
@@ -246,7 +232,6 @@ impl PetWindow {
             },
         );
 
-        let pet = Self { hwnd };
         state_mut(pet.hwnd).ok_or_else(Error::from_win32)?.player.play(now);
         let state = state_mut(pet.hwnd).ok_or_else(Error::from_win32)?;
         update_frame(state)?;
@@ -298,29 +283,54 @@ impl PetWindow {
 
     pub fn set_animations(&self, animations: CharacterAnimations) -> Result<()> {
         let state = state_mut(self.hwnd).ok_or_else(Error::from_win32)?;
-        let surface = pet_surface(&animations.idle.frames[0], state.dpi)?;
-        state.idle = animations.idle;
-        state.walk = animations.walk;
-        state.jump = animations.jump;
-        state.active_clip = if state.active_clip == ActiveClip::Jump {
+        let frame = animations.idle.frames.first().ok_or_else(Error::from_win32)?;
+        let surface = pet_surface(frame, state.dpi)?;
+        let renderer = LayeredRenderer::new(self.hwnd)?;
+        let active_clip = if state.active_clip == ActiveClip::Jump {
             ActiveClip::Jump
         } else if state.speech_bubble.is_visible() {
             ActiveClip::Idle
         } else {
             ActiveClip::Walk
         };
-        state.player = AnimationPlayer::new(match state.active_clip {
-            ActiveClip::Idle => state.idle.clip.clone(),
-            ActiveClip::Walk => state.walk.clip.clone(),
-            ActiveClip::Jump => state.jump.clip.clone(),
+        let mut player = AnimationPlayer::new(match active_clip {
+            ActiveClip::Idle => animations.idle.clip.clone(),
+            ActiveClip::Walk => animations.walk.clip.clone(),
+            ActiveClip::Jump => animations.jump.clip.clone(),
         });
-        state.player.play(Instant::now());
+        player.play(Instant::now());
+        // Keep the old frames and buffers alive until the replacement is rendered.
+        let previous = (
+            std::mem::replace(&mut state.idle, animations.idle),
+            std::mem::replace(&mut state.walk, animations.walk),
+            std::mem::replace(&mut state.jump, animations.jump),
+            std::mem::replace(&mut state.surface, surface),
+            std::mem::replace(&mut state.renderer, renderer),
+            std::mem::take(&mut state.scaled_frames),
+            std::mem::replace(&mut state.player, player),
+            state.active_clip,
+            state.last_frame,
+        );
+        state.active_clip = active_clip;
         state.last_frame = None;
-        state.surface = surface;
-        state.scaled_frames.clear();
         let position = state.position;
-        set_position(self.hwnd, state, position)?;
-        update_frame(state)
+        let result = set_position(self.hwnd, state, position).and_then(|_| update_frame(state));
+        if result.is_err() {
+            (
+                state.idle,
+                state.walk,
+                state.jump,
+                state.surface,
+                state.renderer,
+                state.scaled_frames,
+                state.player,
+                state.active_clip,
+                state.last_frame,
+            ) = previous;
+            // A failed submit may have already resized the window or moved the bubble.
+            let _ = set_position(self.hwnd, state, position);
+        }
+        result
     }
 }
 
@@ -1007,6 +1017,98 @@ mod tests {
     use windows::Win32::Foundation::RECT;
 
     use super::{clamp_drag_position, clamp_position, hide_target_y, movement_exceeded};
+
+    #[test]
+    fn failed_animation_replacement_restores_frames_buffers_and_playback() {
+        use super::*;
+        let pet = hidden_test_pet();
+        let state = state_mut(pet.hwnd).unwrap();
+        apply_pet_dpi(state, 144, state.position).unwrap();
+        state.player.play(Instant::now());
+        update_frame(state).unwrap();
+        let original = CharacterAnimations {
+            idle: state.idle.clone(),
+            walk: state.walk.clone(),
+            jump: state.jump.clone(),
+        };
+        let pixels = state.surface.pixels().to_vec();
+        let last_frame = state.last_frame;
+        let dimensions = (state.surface.width(), state.surface.height());
+        let cached_bytes: usize = state.scaled_frames.values().map(CachedSurface::byte_len).sum();
+        assert!(cached_bytes > 0);
+        let started_at = Instant::now();
+        for failure in 0..3 {
+            let mut replacement = original.clone();
+            match failure {
+                0 => replacement.idle.frames.clear(),
+                1 => replacement.idle.frames[0].width = 0,
+                _ => {
+                    replacement.idle.frames[0].width *= 2;
+                    replacement.walk.frames[0].pixels.clear();
+                }
+            }
+            assert!(pet.set_animations(replacement).is_err());
+            let state = state_mut(pet.hwnd).unwrap();
+            assert_eq!(state.idle, original.idle);
+            assert_eq!(state.walk, original.walk);
+            assert_eq!(state.jump, original.jump);
+            assert_eq!(state.surface.pixels(), pixels);
+            assert_eq!((state.surface.width(), state.surface.height()), dimensions);
+            assert_eq!(
+                state.scaled_frames.values().map(CachedSurface::byte_len).sum::<usize>(),
+                cached_bytes
+            );
+            assert_eq!(state.last_frame, last_frame);
+            assert_eq!(state.player.state(), PlaybackState::Playing);
+            state.last_frame = None;
+            update_frame_at(state, started_at + Duration::from_millis(240)).unwrap();
+        }
+        pet.show_reminder().unwrap();
+        assert!(unsafe { IsWindowVisible(pet.hwnd).as_bool() });
+    }
+
+    #[test]
+    fn failed_pet_initialization_destroys_window_before_and_after_state_attachment() {
+        use super::*;
+        use crate::animation::Frame;
+        use windows::Win32::{System::LibraryLoader::GetModuleHandleW, UI::WindowsAndMessaging::FindWindowW};
+        let template_pet = hidden_test_pet();
+        let state = state_mut(template_pet.hwnd).unwrap();
+        let original = CharacterAnimations {
+            idle: state.idle.clone(),
+            walk: state.walk.clone(),
+            jump: state.jump.clone(),
+        };
+        let instance = unsafe { GetModuleHandleW(None).unwrap().into() };
+        for failure in 0..3 {
+            let mut animations = original.clone();
+            match failure {
+                0 => animations.walk.frames[0].width = 0,
+                1 => animations.walk.frames[0].pixels.clear(),
+                _ => {
+                    animations.walk.clip = crate::animation::AnimationClip::new(
+                        vec![Frame { id: 99 }],
+                        Duration::from_millis(120),
+                        crate::animation::LoopMode::Loop,
+                    )
+                    .unwrap()
+                }
+            }
+            assert!(unsafe { FindWindowW(PET_WINDOW_CLASS, w!("Stand Awhile Pet")) }.is_err());
+            assert!(
+                PetWindow::create(
+                    instance,
+                    HWND::default(),
+                    animations,
+                    Language::English,
+                    None,
+                    "Settings"
+                )
+                .is_err()
+            );
+            assert!(unsafe { FindWindowW(PET_WINDOW_CLASS, w!("Stand Awhile Pet")) }.is_err());
+        }
+    }
 
     #[test]
     fn scaled_animation_cache_preserves_pixels_across_dpi_and_character_changes() {
