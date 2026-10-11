@@ -1,11 +1,9 @@
-use std::sync::{
-    Mutex,
-    atomic::{AtomicU32, Ordering},
-};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::about::show_about_window;
 use crate::app_state::PetPosition;
 use crate::asset::{CharacterAnimations, load_character};
+use crate::countdown::{Countdown, TimerState};
 use crate::gdi::GdiPlus;
 use crate::pet_window::{
     PET_COMMAND_ABOUT, PET_COMMAND_ACKNOWLEDGE, PET_COMMAND_EXIT, PET_COMMAND_HIDDEN, PET_COMMAND_SETTINGS,
@@ -57,15 +55,8 @@ pub const TIMER_ID: usize = 1;
 const DEFAULT_INITIAL_REMAINING_SECONDS: u32 = 20 * 60;
 const AUTO_HIDE_CHECKBOX_ID: usize = 3;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TimerState {
-    NotStarted,
-    Running,
-    Paused,
-    Finished,
-}
-
 pub struct WindowState {
+    pub countdown: Countdown,
     pub auto_hide_on_start: bool,
     pub auto_hide_checkbox: HWND,
     pub language: Language,
@@ -87,9 +78,8 @@ pub struct WindowState {
     pub control_buttons: [HWND; 3],
 }
 
+// Painting can happen before WindowState is attached; this is only a startup fallback.
 static INITIAL_REMAINING_SECONDS: AtomicU32 = AtomicU32::new(DEFAULT_INITIAL_REMAINING_SECONDS);
-static REMAINING_SECONDS: AtomicU32 = AtomicU32::new(DEFAULT_INITIAL_REMAINING_SECONDS);
-static TIMER_STATE: Mutex<TimerState> = Mutex::new(TimerState::NotStarted);
 
 pub fn create_auto_hide_checkbox(
     parent: HWND,
@@ -166,30 +156,23 @@ fn save_auto_hide_preference(hwnd: HWND) {
 
 pub fn set_initial_remaining_seconds(seconds: u32) {
     INITIAL_REMAINING_SECONDS.store(seconds, Ordering::Relaxed);
-    REMAINING_SECONDS.store(seconds, Ordering::Relaxed);
 }
 
 fn apply_timer_period(hwnd: HWND, seconds: u32) {
-    if seconds == initial_remaining_seconds() {
+    let Some(state) = window_state_mut(hwnd) else { return };
+    let previous_remaining = state.countdown.displayed_remaining();
+    if !state.countdown.set_period(seconds) {
         return;
     }
-    let previous_remaining = remaining_seconds();
-    set_initial_remaining_seconds(seconds);
     unsafe {
         invalidate_countdown(hwnd, previous_remaining);
         invalidate_countdown(hwnd, seconds);
     }
-    if window_state(hwnd).is_some() {
-        let _ = sync_control_button_enabled(hwnd);
-    }
+    let _ = sync_control_button_enabled(hwnd);
 }
 
-pub fn remaining_seconds() -> u32 {
-    if *TIMER_STATE.lock().expect("timer state mutex poisoned") == TimerState::Finished {
-        initial_remaining_seconds()
-    } else {
-        REMAINING_SECONDS.load(Ordering::Relaxed)
-    }
+pub fn remaining_seconds(hwnd: HWND) -> u32 {
+    window_state(hwnd).map_or_else(initial_remaining_seconds, |state| state.countdown.displayed_remaining())
 }
 
 pub fn attach_window_state(hwnd: HWND, state: WindowState) {
@@ -219,26 +202,22 @@ pub unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
         }
         WM_TIMER => {
             if wparam.0 == TIMER_ID {
-                if *TIMER_STATE.lock().expect("timer state mutex poisoned") != TimerState::Running {
+                let Some(state) = window_state_mut(hwnd) else {
+                    return LRESULT(0);
+                };
+                if state.countdown.state() != TimerState::Running {
                     return LRESULT(0);
                 }
 
-                let previous_remaining = REMAINING_SECONDS.load(Ordering::Relaxed);
-                REMAINING_SECONDS
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                        Some(value.saturating_sub(1))
-                    })
-                    .ok();
-                let current_remaining = REMAINING_SECONDS.load(Ordering::Relaxed);
-                if current_remaining == 0 {
-                    *TIMER_STATE.lock().expect("timer state mutex poisoned") = TimerState::Finished;
+                let previous_remaining = state.countdown.remaining();
+                if state.countdown.tick() {
                     stop_timer(hwnd);
                     show_pet_reminder(hwnd);
                 }
 
                 let _ = sync_control_button_enabled(hwnd);
 
-                let displayed_remaining = remaining_seconds();
+                let displayed_remaining = remaining_seconds(hwnd);
                 unsafe {
                     invalidate_countdown(hwnd, previous_remaining);
                     if displayed_remaining != previous_remaining {
@@ -490,36 +469,36 @@ unsafe fn invalidate_countdown(hwnd: HWND, remaining_seconds: u32) {
 }
 
 fn activate_button(hwnd: HWND, button: ControlButton) {
-    let previous_remaining = REMAINING_SECONDS.load(Ordering::Relaxed);
+    let Some(state) = window_state_mut(hwnd) else { return };
+    let previous_remaining = state.countdown.remaining();
+    match button {
+        ControlButton::Play => state.countdown.start(),
+        ControlButton::Pause => state.countdown.pause(),
+        ControlButton::Reset => state.countdown.reset(),
+    }
+    let displayed_remaining = state.countdown.displayed_remaining();
 
     match button {
         ControlButton::Play => {
             let _ = hide_pet_animated(hwnd);
-            let initial_remaining = initial_remaining_seconds();
             if previous_remaining == 0 {
-                REMAINING_SECONDS.store(initial_remaining, Ordering::Relaxed);
                 unsafe {
                     invalidate_countdown(hwnd, previous_remaining);
-                    invalidate_countdown(hwnd, initial_remaining);
+                    invalidate_countdown(hwnd, displayed_remaining);
                 }
             }
-            *TIMER_STATE.lock().expect("timer state mutex poisoned") = TimerState::Running;
             start_timer(hwnd);
         }
         ControlButton::Pause => {
             hide_pet(hwnd);
-            *TIMER_STATE.lock().expect("timer state mutex poisoned") = TimerState::Paused;
             stop_timer(hwnd);
         }
         ControlButton::Reset => {
-            let initial_remaining = initial_remaining_seconds();
-            let previous_remaining = REMAINING_SECONDS.swap(initial_remaining, Ordering::Relaxed);
-            *TIMER_STATE.lock().expect("timer state mutex poisoned") = TimerState::NotStarted;
             stop_timer(hwnd);
             hide_pet(hwnd);
             unsafe {
                 invalidate_countdown(hwnd, previous_remaining);
-                invalidate_countdown(hwnd, initial_remaining);
+                invalidate_countdown(hwnd, displayed_remaining);
             }
         }
     }
@@ -528,36 +507,13 @@ fn activate_button(hwnd: HWND, button: ControlButton) {
 }
 
 fn sync_control_button_enabled(hwnd: HWND) -> windows::core::Result<()> {
-    let timer_state = *TIMER_STATE.lock().expect("timer state mutex poisoned");
-    let remaining = REMAINING_SECONDS.load(Ordering::Relaxed);
-
     let state = window_state_mut(hwnd).expect("window state missing");
-    update_control_buttons_for(
-        &state.control_buttons,
-        play_enabled(timer_state),
-        pause_enabled(timer_state),
-        reset_enabled(timer_state, remaining),
-    );
+    let (play, pause, reset) = state.countdown.buttons();
+    update_control_buttons_for(&state.control_buttons, play, pause, reset);
     state.tray_icon.update_tooltip(
         hwnd,
-        crate::i18n::tray_tooltip(state.language, timer_state == TimerState::Running),
+        crate::i18n::tray_tooltip(state.language, state.countdown.state() == TimerState::Running),
     )
-}
-
-fn play_enabled(timer_state: TimerState) -> bool {
-    matches!(
-        timer_state,
-        TimerState::NotStarted | TimerState::Paused | TimerState::Finished
-    )
-}
-
-fn pause_enabled(timer_state: TimerState) -> bool {
-    matches!(timer_state, TimerState::Running)
-}
-
-fn reset_enabled(timer_state: TimerState, remaining_seconds: u32) -> bool {
-    timer_state != TimerState::Finished
-        && (timer_state != TimerState::NotStarted || remaining_seconds != initial_remaining_seconds())
 }
 
 fn start_timer(hwnd: HWND) {
@@ -631,13 +587,14 @@ fn release_hidden_pet(hwnd: HWND, pet_hwnd: HWND) {
 }
 
 fn acknowledge_pet(hwnd: HWND) {
-    let initial_remaining = initial_remaining_seconds();
-    let previous_remaining = REMAINING_SECONDS.swap(initial_remaining, Ordering::Relaxed);
-    *TIMER_STATE.lock().expect("timer state mutex poisoned") = TimerState::Running;
+    let Some(state) = window_state_mut(hwnd) else { return };
+    let previous_remaining = state.countdown.remaining();
+    state.countdown.restart();
+    let displayed_remaining = state.countdown.displayed_remaining();
     start_timer(hwnd);
     unsafe {
         invalidate_countdown(hwnd, previous_remaining);
-        invalidate_countdown(hwnd, initial_remaining);
+        invalidate_countdown(hwnd, displayed_remaining);
     }
     let _ = sync_control_button_enabled(hwnd);
 }
@@ -952,10 +909,7 @@ fn apply_saved_settings(hwnd: HWND) {
         state.common_gui_font = font;
         let _ = state.tray_icon.update_language(
             hwnd,
-            crate::i18n::tray_tooltip(
-                language,
-                *TIMER_STATE.lock().expect("timer state mutex poisoned") == TimerState::Running,
-            ),
+            crate::i18n::tray_tooltip(language, state.countdown.state() == TimerState::Running),
             crate::tray_menu_start_text(language),
             crate::tray_menu_show_text(language),
             crate::tray_menu_settings_text(language),
@@ -1034,7 +988,65 @@ fn settings_back_text(language: Language) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    static TIMER_TEST_LOCK: Mutex<()> = Mutex::new(());
+    fn attach_test_state(hwnd: HWND, instance: HINSTANCE, countdown: Countdown, auto_hide_on_start: bool) {
+        use windows::Win32::UI::WindowsAndMessaging::{IDI_APPLICATION, LoadIconW};
+        let tray_icon = TrayIcon::create(
+            hwnd,
+            unsafe { LoadIconW(None, IDI_APPLICATION).unwrap() },
+            "Startup test",
+            "Start",
+            "Show",
+            "Settings",
+            "About",
+            "Exit",
+        )
+        .unwrap();
+        // Native child controls let the real timer handler update button state.
+        let controls = std::array::from_fn(|_| {
+            unsafe {
+                CreateWindowExW(
+                    Default::default(),
+                    windows::core::w!("BUTTON"),
+                    windows::core::w!(""),
+                    WS_CHILD,
+                    0,
+                    0,
+                    1,
+                    1,
+                    Some(hwnd),
+                    None,
+                    Some(instance),
+                    None,
+                )
+            }
+            .unwrap()
+        });
+        attach_window_state(
+            hwnd,
+            WindowState {
+                countdown,
+                auto_hide_on_start,
+                auto_hide_checkbox: controls[0],
+                language: Language::English,
+                theme: Theme::System,
+                tray_icon,
+                tray_when_close: true,
+                pet_window: None,
+                gdi_plus: GdiPlus::new().unwrap(),
+                character: "cat".to_owned(),
+                pet_position: None,
+                components: Vec::new(),
+                common_gui_font: None,
+                settings_button: controls[0],
+                settings_button_hovered: false,
+                about_button: controls[1],
+                about_button_hovered: false,
+                settings_panel: HWND::default(),
+                timer_panel: controls[2],
+                control_buttons: controls,
+            },
+        );
+    }
 
     #[test]
     fn character_selection_changes_only_after_successful_load_and_replacement() {
@@ -1100,14 +1112,12 @@ mod tests {
 
     #[test]
     fn background_start_counts_down_and_reminds_with_either_auto_hide_preference() {
-        use crate::{gdi::GdiPlus, startup::StartupMode};
+        use crate::startup::StartupMode;
         use windows::Win32::{
             System::LibraryLoader::GetModuleHandleW,
-            UI::WindowsAndMessaging::{
-                IDI_APPLICATION, LoadIconW, PM_REMOVE, PeekMessageW, RegisterClassW, WM_QUIT, WNDCLASSW,
-            },
+            UI::WindowsAndMessaging::{PM_REMOVE, PeekMessageW, RegisterClassW, WM_QUIT, WNDCLASSW},
         };
-        let _guard = TIMER_TEST_LOCK.lock().unwrap();
+
         unsafe {
             let instance: HINSTANCE = GetModuleHandleW(None).unwrap().into();
             let class = WNDCLASSW {
@@ -1134,63 +1144,10 @@ mod tests {
                     None,
                 )
                 .unwrap();
-                let tray_icon = TrayIcon::create(
-                    hwnd,
-                    LoadIconW(None, IDI_APPLICATION).unwrap(),
-                    "Startup test",
-                    "Start",
-                    "Show",
-                    "Settings",
-                    "About",
-                    "Exit",
-                )
-                .unwrap();
-                // Native child controls let the real timer handler update button state.
-                let controls = std::array::from_fn(|_| {
-                    CreateWindowExW(
-                        Default::default(),
-                        windows::core::w!("BUTTON"),
-                        windows::core::w!(""),
-                        WS_CHILD,
-                        0,
-                        0,
-                        1,
-                        1,
-                        Some(hwnd),
-                        None,
-                        Some(instance),
-                        None,
-                    )
-                    .unwrap()
-                });
-                attach_window_state(
-                    hwnd,
-                    WindowState {
-                        auto_hide_on_start,
-                        auto_hide_checkbox: controls[0],
-                        language: Language::English,
-                        theme: Theme::System,
-                        tray_icon,
-                        tray_when_close: true,
-                        pet_window: None,
-                        gdi_plus: GdiPlus::new().unwrap(),
-                        character: "cat".to_owned(),
-                        pet_position: None,
-                        components: Vec::new(),
-                        common_gui_font: None,
-                        settings_button: controls[0],
-                        settings_button_hovered: false,
-                        about_button: controls[1],
-                        about_button_hovered: false,
-                        settings_panel: HWND::default(),
-                        timer_panel: controls[2],
-                        control_buttons: controls,
-                    },
-                );
-                set_initial_remaining_seconds(2);
-                *TIMER_STATE.lock().unwrap() = TimerState::NotStarted;
+                attach_test_state(hwnd, instance, Countdown::new(2), auto_hide_on_start);
+
                 mode.finish(hwnd);
-                assert_eq!(*TIMER_STATE.lock().unwrap(), TimerState::Running);
+                assert_eq!(window_state(hwnd).unwrap().countdown.state(), TimerState::Running);
                 assert_eq!(
                     window_state(hwnd).unwrap().tray_icon.test_tooltip(),
                     "Stand Awhile (Timing)"
@@ -1205,17 +1162,17 @@ mod tests {
                 activate_button(hwnd, ControlButton::Reset);
                 assert_eq!(window_state(hwnd).unwrap().tray_icon.test_tooltip(), "Stand Awhile");
                 activate_button(hwnd, ControlButton::Play);
-                assert_eq!(remaining_seconds(), 2);
+                assert_eq!(remaining_seconds(hwnd), 2);
                 assert!(!IsWindowVisible(hwnd).as_bool());
                 assert!(window_state(hwnd).unwrap().pet_window.is_none());
 
                 SendMessageW(hwnd, WM_TIMER, Some(WPARAM(TIMER_ID)), None);
-                assert_eq!(remaining_seconds(), 1);
+                assert_eq!(remaining_seconds(hwnd), 1);
                 crate::startup::handle_existing_instance(true).unwrap();
                 assert!(!IsWindowVisible(hwnd).as_bool());
                 assert!(window_state(hwnd).unwrap().pet_window.is_none());
-                assert_eq!(*TIMER_STATE.lock().unwrap(), TimerState::Running);
-                assert_eq!(remaining_seconds(), 1);
+                assert_eq!(window_state(hwnd).unwrap().countdown.state(), TimerState::Running);
+                assert_eq!(remaining_seconds(hwnd), 1);
                 SendMessageW(
                     hwnd,
                     WM_COMMAND,
@@ -1223,22 +1180,22 @@ mod tests {
                     None,
                 );
                 assert!(IsWindowVisible(hwnd).as_bool());
-                assert_eq!(remaining_seconds(), 1);
-                assert_eq!(*TIMER_STATE.lock().unwrap(), TimerState::Running);
+                assert_eq!(remaining_seconds(hwnd), 1);
+                assert_eq!(window_state(hwnd).unwrap().countdown.state(), TimerState::Running);
                 assert!(window_state(hwnd).unwrap().pet_window.is_none());
 
                 SendMessageW(hwnd, WM_TIMER, Some(WPARAM(TIMER_ID)), None);
-                assert_eq!(*TIMER_STATE.lock().unwrap(), TimerState::Finished);
+                assert_eq!(window_state(hwnd).unwrap().countdown.state(), TimerState::Finished);
                 assert_eq!(window_state(hwnd).unwrap().tray_icon.test_tooltip(), "Stand Awhile");
-                assert_eq!(REMAINING_SECONDS.load(Ordering::Relaxed), 0);
+                assert_eq!(window_state(hwnd).unwrap().countdown.remaining(), 0);
                 let pet_hwnd = window_state(hwnd).unwrap().pet_window.as_ref().unwrap().test_hwnd();
                 assert!(IsWindowVisible(pet_hwnd).as_bool());
                 let _ = ShowWindow(hwnd, SW_HIDE);
                 crate::startup::handle_existing_instance(true).unwrap();
                 assert!(!IsWindowVisible(hwnd).as_bool());
                 assert!(IsWindowVisible(pet_hwnd).as_bool());
-                assert_eq!(*TIMER_STATE.lock().unwrap(), TimerState::Finished);
-                assert_eq!(REMAINING_SECONDS.load(Ordering::Relaxed), 0);
+                assert_eq!(window_state(hwnd).unwrap().countdown.state(), TimerState::Finished);
+                assert_eq!(window_state(hwnd).unwrap().countdown.remaining(), 0);
                 // A queued hide notification must not release a visible reminder.
                 release_hidden_pet(hwnd, pet_hwnd);
                 assert!(window_state(hwnd).unwrap().pet_window.is_some());
@@ -1287,8 +1244,6 @@ mod tests {
                 let _ = PeekMessageW(&mut message, None, WM_QUIT, WM_QUIT, PM_REMOVE);
             }
         }
-        set_initial_remaining_seconds(DEFAULT_INITIAL_REMAINING_SECONDS);
-        *TIMER_STATE.lock().unwrap() = TimerState::NotStarted;
     }
 
     #[test]
@@ -1300,7 +1255,7 @@ mod tests {
                 WNDCLASSW, WS_OVERLAPPEDWINDOW,
             },
         };
-        let _guard = TIMER_TEST_LOCK.lock().unwrap();
+
         unsafe {
             let instance: HINSTANCE = GetModuleHandleW(None).unwrap().into();
             let class = WNDCLASSW {
@@ -1325,14 +1280,27 @@ mod tests {
                 None,
             )
             .unwrap();
-            set_initial_remaining_seconds(1200);
+            attach_test_state(hwnd, instance, Countdown::new(1200), false);
+            // Supply an isolated panel so restore commands never load the user's config.
+            let panel = create_settings_panel(hwnd, instance, Config::default(), None).unwrap();
+            window_state_mut(hwnd).unwrap().settings_panel = panel;
             for (state, remaining) in [
                 (TimerState::Running, 731),
                 (TimerState::Paused, 412),
                 (TimerState::Finished, 0),
             ] {
-                *TIMER_STATE.lock().unwrap() = state;
-                REMAINING_SECONDS.store(remaining, Ordering::Relaxed);
+                let mut countdown = Countdown::new(1200);
+                countdown.start();
+                for _ in 0..(1200 - remaining) {
+                    countdown.tick();
+                }
+                if state == TimerState::Paused {
+                    countdown.pause();
+                }
+                window_state_mut(hwnd).unwrap().countdown = countdown;
+                apply_timer_period(hwnd, 1200);
+                assert_eq!(window_state(hwnd).unwrap().countdown, countdown);
+
                 for presentation in [SW_HIDE, SW_SHOWMINNOACTIVE] {
                     for (message, command) in [
                         (crate::single_instance::WM_SHOW_EXISTING_INSTANCE, 0),
@@ -1345,30 +1313,18 @@ mod tests {
                         SendMessageW(hwnd, message, Some(WPARAM(command)), None);
                         assert!(IsWindowVisible(hwnd).as_bool());
                         assert!(!IsIconic(hwnd).as_bool(), "message={message}, command={command}");
-                        assert_eq!(*TIMER_STATE.lock().unwrap(), state);
-                        assert_eq!(REMAINING_SECONDS.load(Ordering::Relaxed), remaining);
+                        assert_eq!(window_state(hwnd).unwrap().countdown.state(), state);
+                        assert_eq!(window_state(hwnd).unwrap().countdown.remaining(), remaining);
                     }
                 }
+                apply_timer_period(hwnd, 600);
+                assert_eq!(window_state(hwnd).unwrap().countdown.state(), state);
+                assert_eq!(window_state(hwnd).unwrap().countdown.remaining(), 600);
+                assert_eq!(remaining_seconds(hwnd), 600);
             }
             DestroyWindow(hwnd).unwrap();
             let mut message = MSG::default();
             let _ = PeekMessageW(&mut message, None, WM_QUIT, WM_QUIT, PM_REMOVE);
-            set_initial_remaining_seconds(DEFAULT_INITIAL_REMAINING_SECONDS);
-            *TIMER_STATE.lock().unwrap() = TimerState::NotStarted;
-        }
-    }
-
-    #[test]
-    fn finished_countdown_displays_configured_duration() {
-        let _guard = TIMER_TEST_LOCK.lock().unwrap();
-        for period in [1200, 600, 3661] {
-            set_initial_remaining_seconds(period);
-            REMAINING_SECONDS.store(0, Ordering::Relaxed);
-            *TIMER_STATE.lock().unwrap() = TimerState::Finished;
-            let displayed = remaining_seconds();
-            set_initial_remaining_seconds(DEFAULT_INITIAL_REMAINING_SECONDS);
-            *TIMER_STATE.lock().unwrap() = TimerState::NotStarted;
-            assert_eq!(displayed, period);
         }
     }
 
@@ -1410,56 +1366,6 @@ mod tests {
                 assert_eq!(IsWindowVisible(hwnd).as_bool(), !enabled);
             }
             DestroyWindow(hwnd).unwrap();
-        }
-    }
-
-    #[test]
-    fn unrelated_settings_preserve_running_paused_and_finished_countdowns() {
-        let _guard = TIMER_TEST_LOCK.lock().unwrap();
-        set_initial_remaining_seconds(1200);
-        for (state, remaining) in [
-            (TimerState::Running, 731),
-            (TimerState::Paused, 412),
-            (TimerState::Finished, 0),
-        ] {
-            *TIMER_STATE.lock().unwrap() = state;
-            REMAINING_SECONDS.store(remaining, Ordering::Relaxed);
-            apply_timer_period(HWND::default(), 1200);
-            assert_eq!(REMAINING_SECONDS.load(Ordering::Relaxed), remaining);
-            assert_eq!(
-                remaining_seconds(),
-                if state == TimerState::Finished { 1200 } else { remaining }
-            );
-            assert_eq!(*TIMER_STATE.lock().unwrap(), state);
-        }
-        apply_timer_period(HWND::default(), 600);
-        assert_eq!(initial_remaining_seconds(), 600);
-        assert_eq!(remaining_seconds(), 600);
-        set_initial_remaining_seconds(DEFAULT_INITIAL_REMAINING_SECONDS);
-        *TIMER_STATE.lock().unwrap() = TimerState::NotStarted;
-    }
-
-    #[test]
-    fn finished_countdown_disables_reset() {
-        let _guard = TIMER_TEST_LOCK.lock().unwrap();
-        for remaining in [0, initial_remaining_seconds()] {
-            assert!(!reset_enabled(TimerState::Finished, remaining));
-        }
-        assert!(play_enabled(TimerState::Finished));
-        assert!(!pause_enabled(TimerState::Finished));
-    }
-
-    #[test]
-    fn timer_button_states_allow_reset_before_the_first_tick() {
-        let _guard = TIMER_TEST_LOCK.lock().unwrap();
-        let initial = initial_remaining_seconds();
-        assert!(play_enabled(TimerState::NotStarted));
-        assert!(!pause_enabled(TimerState::NotStarted));
-        assert!(!reset_enabled(TimerState::NotStarted, initial));
-        for state in [TimerState::Running, TimerState::Paused] {
-            assert!(reset_enabled(state, initial));
-            assert_eq!(play_enabled(state), state != TimerState::Running);
-            assert_eq!(pause_enabled(state), state == TimerState::Running);
         }
     }
 }

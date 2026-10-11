@@ -6,6 +6,7 @@ mod app_state;
 mod asset;
 mod autostart;
 mod config;
+mod countdown;
 mod gdi;
 mod i18n;
 mod persistence;
@@ -158,6 +159,7 @@ fn run() -> Result<()> {
     attach_window_state(
         hwnd,
         WindowState {
+            countdown: countdown::Countdown::new(config.period),
             auto_hide_on_start: config.auto_hide_on_start,
             auto_hide_checkbox,
             language,

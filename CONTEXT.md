@@ -12,6 +12,7 @@ window messages, animation updates, and rendering run on the main thread.
 | `startup.rs` | `--autostart` parsing, duplicate-launch policy, initial visibility and countdown start |
 | `autostart.rs` | Current-user Run entry synchronization, configuration rollback and startup error messages |
 | `window_proc.rs` | Countdown state, Pet commands, settings application, main window lifetime |
+| `countdown.rs` | Pure countdown transitions, remaining/displayed seconds, and button availability; owned by the main window |
 | `settings.rs`, `config.rs` | Settings UI and UTF-8 JSON persistence in Roaming AppData |
 | `asset.rs`, `build.rs` | Embedded manifest and PNGs; in-memory GDI+ decoding of the selected character |
 | `animation.rs` | Pure `Instant`-driven frame selection, looping, pause/resume, completion |
@@ -29,7 +30,10 @@ restores the last position. Changing character while a Pet exists loads its
 replacement synchronously; without a Pet, it only updates the selection.
 
 The main countdown uses a one-second Win32 timer to decrement its remaining
-seconds. Pet animation uses a 16 ms window timer only while the Pet window
+seconds. Its state and remaining seconds live in `WindowState.countdown`, without
+a global timer-state mutex or remaining-seconds atomic. A startup-only atomic
+provides the initial display value before the window state is attached.
+Pet animation uses a 16 ms window timer only while the Pet window
 is visible, including its entrance and exit animations, and `Instant` to
 select frames. Hiding the Pet stops that timer; queued timer messages do
 not update or render a hidden Pet. There is no asset worker or GPU renderer.

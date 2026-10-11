@@ -82,7 +82,8 @@ unsafe extern "system" fn timer_panel_proc(hwnd: HWND, msg: u32, wparam: WPARAM,
             let mut paint = PAINTSTRUCT::default();
             let hdc = unsafe { BeginPaint(hwnd, &mut paint) };
             let _ = paint_background(&paint.rcPaint, hdc);
-            let _ = draw_countdown(hwnd, hdc, crate::window_proc::remaining_seconds());
+            let parent = unsafe { windows::Win32::UI::WindowsAndMessaging::GetParent(hwnd) }.unwrap_or_default();
+            let _ = draw_countdown(hwnd, hdc, crate::window_proc::remaining_seconds(parent));
             let _ = draw_timer_hint(hwnd, hdc);
             unsafe {
                 let _ = EndPaint(hwnd, &paint);
