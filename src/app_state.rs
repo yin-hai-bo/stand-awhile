@@ -3,7 +3,7 @@ use std::{fs, path::Path};
 use serde::{Deserialize, Serialize};
 use windows::core::{Error, HRESULT, Result};
 
-use crate::persistence::{io_error_to_win_error, state_file_path};
+use crate::persistence::{io_error_to_win_error, state_file_path, write_atomic};
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct AppState {
@@ -38,7 +38,7 @@ impl AppState {
 
     fn save_to(&self, path: &Path) -> Result<()> {
         let json = serde_json::to_string_pretty(self).map_err(json_error)?;
-        fs::write(path, format!("{json}\n")).map_err(io_error_to_win_error)
+        write_atomic(path, &format!("{json}\n"))
     }
 }
 
@@ -86,6 +86,10 @@ mod tests {
         };
         state.save_to(&path).unwrap();
         assert_eq!(AppState::load_from(&path).unwrap(), state);
+        AppState::default().save_to(&path).unwrap();
+        assert_eq!(AppState::load_from(&path).unwrap(), AppState::default());
+        state.save_to(&path).unwrap();
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 2);
         assert_eq!(fs::read_to_string(&config_path).unwrap(), legacy_config);
         fs::write(&config_path, "invalid config").unwrap();
         assert_eq!(AppState::load_from(&path).unwrap(), state);

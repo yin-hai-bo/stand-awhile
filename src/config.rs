@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use windows::core::{Error, Result};
 
 use crate::i18n::resolve_language;
-use crate::persistence::{config_file_path, io_error_to_win_error};
+use crate::persistence::{config_file_path, io_error_to_win_error, write_atomic};
 use crate::ui::theme::{Theme, resolve_theme};
 
 const DEFAULT_CONFIG_CONTENTS: &str = "{}\n";
@@ -82,8 +82,11 @@ impl Config {
     }
 
     pub fn save(&self) -> Result<()> {
-        let path = ensure_config_file_path()?;
-        fs::write(path, self.to_json()?).map_err(io_error_to_win_error)
+        self.save_to(&config_file_path()?)
+    }
+
+    fn save_to(&self, path: &Path) -> Result<()> {
+        write_atomic(path, &self.to_json()?)
     }
 
     fn to_json(&self) -> Result<String> {
@@ -113,12 +116,36 @@ fn ensure_config_file(path: &Path) -> Result<()> {
         return Ok(());
     }
 
-    fs::write(path, DEFAULT_CONFIG_CONTENTS).map_err(io_error_to_win_error)
+    write_atomic(path, DEFAULT_CONFIG_CONTENTS)
 }
 
 #[cfg(test)]
 mod tests {
     use super::Config;
+
+    #[test]
+    fn config_file_creation_and_replacement_round_trip() {
+        let directory = std::env::temp_dir().join(format!("stand-awhile-config-atomic-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("config.json");
+        super::ensure_config_file(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}\n");
+        let config = Config {
+            period: 90,
+            character: "dog".to_owned(),
+            language: "zh".to_owned(),
+            ..Config::default()
+        };
+        config.save_to(&path).unwrap();
+        super::ensure_config_file(&path).unwrap();
+        assert_eq!(
+            Config::from_json(&std::fs::read_to_string(&path).unwrap()).unwrap(),
+            config
+        );
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&directory).unwrap();
+    }
 
     #[test]
     fn config_default_values_are_stable() {
