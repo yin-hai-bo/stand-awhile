@@ -38,6 +38,13 @@ do not call window APIs. Pet, GDI+, and component snapshots share ownership with
 `Rc`, so synchronous callbacks can release the attached state without invalidating
 an operation in progress. No animation pixel buffers are cloned. `WM_NCDESTROY`
 clears the attached pointer before dropping state and its resources.
+Pet-window mutations also use short closures. Position, capture, visibility,
+render submission, bubble updates, and menu tracking run outside Pet state
+borrows. Renderer, render surface, and bubble controller handles use `Rc` to
+keep an operation's resources alive through callbacks. Nested rendering waits
+for the next timer tick; pending bubble starts and language changes are retained.
+Pet destruction clears its attached pointer before dropping resources. Its owner
+still releases a hidden Pet asynchronously, rejecting stale hide notifications.
 Pet animation uses a 16 ms window timer only while the Pet window
 is visible, including its entrance and exit animations, and `Instant` to
 select frames. Hiding the Pet stops that timer; queued timer messages do

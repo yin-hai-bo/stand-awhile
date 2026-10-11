@@ -1,5 +1,7 @@
 use std::{
+    cell::RefCell,
     collections::HashMap,
+    rc::Rc,
     sync::OnceLock,
     time::{Duration, Instant},
 };
@@ -66,8 +68,8 @@ enum ActiveClip {
 }
 
 struct PetWindowState {
-    renderer: LayeredRenderer,
-    surface: PixelSurface,
+    renderer: Rc<RefCell<LayeredRenderer>>,
+    surface: Rc<PixelSurface>,
     scaled_frames: HashMap<(ActiveClip, u32), CachedSurface>,
     dpi: u32,
     position: (i32, i32),
@@ -81,7 +83,9 @@ struct PetWindowState {
     drag: Option<DragState>,
     hide_animation: Option<HideAnimation>,
     show_animation: Option<ShowAnimation>,
-    speech_bubble: SpeechBubbleController,
+    speech_bubble: Rc<RefCell<SpeechBubbleController>>,
+    language: Language,
+    bubble_start: Option<Instant>,
     start_menu_text: String,
     show_main_menu_text: String,
     settings_menu_text: String,
@@ -118,29 +122,30 @@ impl PetWindow {
     }
 
     pub(crate) fn position(&self) -> Result<PetPosition> {
-        let state = state_mut(self.hwnd).ok_or_else(Error::from_win32)?;
-        let position = state
-            .show_animation
-            .as_ref()
-            .map(|animation| animation.target)
-            .or_else(|| {
-                state
-                    .hide_animation
-                    .as_ref()
-                    .map(|animation| animation.restore_position)
-            })
-            .unwrap_or(state.position);
+        let position = with_state(self.hwnd, |state| {
+            state
+                .show_animation
+                .as_ref()
+                .map(|animation| animation.target)
+                .or_else(|| {
+                    state
+                        .hide_animation
+                        .as_ref()
+                        .map(|animation| animation.restore_position)
+                })
+                .unwrap_or(state.position)
+        })
+        .ok_or_else(Error::from_win32)?;
         persistent_position(self.hwnd, position)
     }
 
     #[cfg(test)]
     pub(crate) fn finish_hide_for_test(&self) {
-        state_mut(self.hwnd)
-            .unwrap()
-            .hide_animation
-            .as_mut()
-            .unwrap()
-            .started_at = Instant::now() - Duration::from_millis(HIDE_ANIMATION_DURATION_MS as u64);
+        with_state(self.hwnd, |state| {
+            state.hide_animation.as_mut().unwrap().started_at =
+                Instant::now() - Duration::from_millis(HIDE_ANIMATION_DURATION_MS as u64);
+        })
+        .unwrap();
         unsafe {
             windows::Win32::UI::WindowsAndMessaging::SendMessageW(
                 self.hwnd,
@@ -208,8 +213,8 @@ impl PetWindow {
         attach_state(
             hwnd,
             PetWindowState {
-                renderer,
-                surface,
+                renderer: Rc::new(RefCell::new(renderer)),
+                surface: Rc::new(surface),
                 scaled_frames: HashMap::new(),
                 dpi,
                 position,
@@ -223,7 +228,9 @@ impl PetWindow {
                 drag: None,
                 hide_animation: None,
                 show_animation: None,
-                speech_bubble,
+                speech_bubble: Rc::new(RefCell::new(speech_bubble)),
+                language,
+                bubble_start: None,
                 start_menu_text: crate::tray_menu_start_text(Language::English).to_owned(),
                 show_main_menu_text: crate::tray_menu_show_text(Language::English).to_owned(),
                 settings_menu_text: settings_menu_text.to_owned(),
@@ -232,38 +239,36 @@ impl PetWindow {
             },
         );
 
-        state_mut(pet.hwnd).ok_or_else(Error::from_win32)?.player.play(now);
-        let state = state_mut(pet.hwnd).ok_or_else(Error::from_win32)?;
-        update_frame(state)?;
+        with_state(pet.hwnd, |state| state.player.play(now)).ok_or_else(Error::from_win32)?;
+        update_frame(pet.hwnd)?;
         Ok(pet)
     }
 
     pub fn hide(&self) {
-        if let Some(state) = state_mut(self.hwnd) {
+        with_state(self.hwnd, |state| {
             cancel_show_animation(state);
             cancel_hide_animation(state);
-            state.speech_bubble.hide();
             sync_bubble_animation(state, false, Instant::now());
-        }
+        });
+        hide_bubble(self.hwnd);
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_HIDE);
         }
     }
 
     pub fn hide_animated(&self) -> Result<()> {
-        let state = state_mut(self.hwnd).ok_or_else(Error::from_win32)?;
-        if !unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(self.hwnd).as_bool() } {
+        if !unsafe { IsWindowVisible(self.hwnd).as_bool() } {
             return Ok(());
         }
-        begin_hide_animation(self.hwnd, state)
+        begin_hide_animation(self.hwnd)
     }
 
     pub fn show_reminder(&self) -> Result<()> {
-        let state = state_mut(self.hwnd).ok_or_else(Error::from_win32)?;
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_HIDE);
         }
-        begin_show_animation(self.hwnd, state, Instant::now())?;
+        begin_show_animation(self.hwnd, Instant::now())?;
+        with_state(self.hwnd, |_| ()).ok_or_else(Error::from_win32)?;
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
         }
@@ -271,24 +276,33 @@ impl PetWindow {
     }
 
     pub fn set_language(&self, language: Language) {
-        if let Some(state) = state_mut(self.hwnd) {
-            let _ = state.speech_bubble.set_language(language);
+        let bubble = with_state(self.hwnd, |state| {
+            state.language = language;
             state.start_menu_text = crate::tray_menu_start_text(language).to_owned();
             state.show_main_menu_text = crate::tray_menu_show_text(language).to_owned();
             state.settings_menu_text = crate::tray_menu_settings_text(language).to_owned();
             state.about_menu_text = crate::tray_menu_about_text(language).to_owned();
             state.exit_menu_text = crate::tray_menu_exit_text(language).to_owned();
+            state.speech_bubble.clone()
+        });
+        if let Some(bubble) = bubble {
+            if let Ok(mut bubble) = bubble.try_borrow_mut() {
+                let _ = bubble.set_language(language);
+            }
         }
     }
 
     pub fn set_animations(&self, animations: CharacterAnimations) -> Result<()> {
-        let state = state_mut(self.hwnd).ok_or_else(Error::from_win32)?;
+        let (dpi, clip, bubble) = with_state(self.hwnd, |state| {
+            (state.dpi, state.active_clip, state.speech_bubble.clone())
+        })
+        .ok_or_else(Error::from_win32)?;
         let frame = animations.idle.frames.first().ok_or_else(Error::from_win32)?;
-        let surface = pet_surface(frame, state.dpi)?;
-        let renderer = LayeredRenderer::new(self.hwnd)?;
-        let active_clip = if state.active_clip == ActiveClip::Jump {
+        let surface = Rc::new(pet_surface(frame, dpi)?);
+        let renderer = Rc::new(RefCell::new(LayeredRenderer::new(self.hwnd)?));
+        let active_clip = if clip == ActiveClip::Jump {
             ActiveClip::Jump
-        } else if state.speech_bubble.is_visible() {
+        } else if bubble.try_borrow().map_err(|_| Error::from_win32())?.is_visible() {
             ActiveClip::Idle
         } else {
             ActiveClip::Walk
@@ -299,86 +313,131 @@ impl PetWindow {
             ActiveClip::Jump => animations.jump.clip.clone(),
         });
         player.play(Instant::now());
-        // Keep the old frames and buffers alive until the replacement is rendered.
-        let previous = (
-            std::mem::replace(&mut state.idle, animations.idle),
-            std::mem::replace(&mut state.walk, animations.walk),
-            std::mem::replace(&mut state.jump, animations.jump),
-            std::mem::replace(&mut state.surface, surface),
-            std::mem::replace(&mut state.renderer, renderer),
-            std::mem::take(&mut state.scaled_frames),
-            std::mem::replace(&mut state.player, player),
-            state.active_clip,
-            state.last_frame,
-        );
-        state.active_clip = active_clip;
-        state.last_frame = None;
-        let position = state.position;
-        let result = set_position(self.hwnd, state, position).and_then(|_| update_frame(state));
-        if result.is_err() {
-            (
-                state.idle,
-                state.walk,
-                state.jump,
-                state.surface,
-                state.renderer,
-                state.scaled_frames,
-                state.player,
+        let (previous, position) = with_state(self.hwnd, |state| {
+            let previous = (
+                std::mem::replace(&mut state.idle, animations.idle),
+                std::mem::replace(&mut state.walk, animations.walk),
+                std::mem::replace(&mut state.jump, animations.jump),
+                std::mem::replace(&mut state.surface, surface),
+                std::mem::replace(&mut state.renderer, renderer.clone()),
+                std::mem::take(&mut state.scaled_frames),
+                std::mem::replace(&mut state.player, player),
                 state.active_clip,
                 state.last_frame,
-            ) = previous;
-            // A failed submit may have already resized the window or moved the bubble.
-            let _ = set_position(self.hwnd, state, position);
+            );
+            state.active_clip = active_clip;
+            state.last_frame = None;
+            (previous, state.position)
+        })
+        .ok_or_else(Error::from_win32)?;
+        let result = set_position(self.hwnd, position).and_then(|_| update_frame(self.hwnd));
+        if result.is_err() {
+            // A callback may have destroyed the Pet or installed another replacement.
+            let restored = with_state(self.hwnd, |state| {
+                if !Rc::ptr_eq(&state.renderer, &renderer) {
+                    return false;
+                }
+                (
+                    state.idle,
+                    state.walk,
+                    state.jump,
+                    state.surface,
+                    state.renderer,
+                    state.scaled_frames,
+                    state.player,
+                    state.active_clip,
+                    state.last_frame,
+                ) = previous;
+                true
+            })
+            .unwrap_or(false);
+            if restored {
+                let _ = set_position(self.hwnd, position);
+            }
         }
         result
     }
 }
 
-fn begin_hide_animation(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
-    cancel_show_animation(state);
-    state.speech_bubble.hide();
-    sync_bubble_animation(state, false, Instant::now());
-    let work_area = monitor_work_area(hwnd)?;
-    let height = state.surface.height() as i32;
-    state.hide_animation = Some(HideAnimation {
-        started_at: Instant::now(),
-        from: state.position,
-        restore_position: state.position,
-        target_y: hide_target_y(state.position.1, height, work_area),
+fn hide_bubble(hwnd: HWND) {
+    if let Some(bubble) = with_state(hwnd, |state| {
+        state.bubble_start = None;
+        state.speech_bubble.clone()
+    }) {
+        if let Ok(bubble) = bubble.try_borrow() {
+            bubble.hide();
+        }
+    }
+}
+
+fn start_bubble(hwnd: HWND, now: Instant) {
+    let bubble = with_state(hwnd, |state| {
+        state.bubble_start = Some(now);
+        state.speech_bubble.clone()
     });
+    if let Some(bubble) = bubble {
+        if let Ok(mut bubble) = bubble.try_borrow_mut() {
+            if let Some(Some(now)) = with_state(hwnd, |state| state.bubble_start.take()) {
+                bubble.start(now, SPEECH_BUBBLE_INITIAL_DELAY);
+            }
+        }
+    }
+}
+
+fn begin_hide_animation(hwnd: HWND) -> Result<()> {
+    let work_area = monitor_work_area(hwnd)?;
+    with_state(hwnd, |state| {
+        cancel_show_animation(state);
+        sync_bubble_animation(state, false, Instant::now());
+        state.hide_animation = Some(HideAnimation {
+            started_at: Instant::now(),
+            from: state.position,
+            restore_position: state.position,
+            target_y: hide_target_y(state.position.1, state.surface.height() as i32, work_area),
+        });
+    })
+    .ok_or_else(Error::from_win32)?;
+    hide_bubble(hwnd);
     Ok(())
 }
 
-fn begin_show_animation(hwnd: HWND, state: &mut PetWindowState, now: Instant) -> Result<()> {
-    cancel_show_animation(state);
-    cancel_hide_animation(state);
-    state.speech_bubble.hide();
-    let size = (state.surface.width() as i32, state.surface.height() as i32);
+fn begin_show_animation(hwnd: HWND, now: Instant) -> Result<()> {
     let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
     let info = monitor_info_ex(monitor)?;
-    let target = clamp_position(state.position, size, info.monitorInfo.rcWork);
-    let from = (target.0, hide_target_y(target.1, size.1, info.monitorInfo.rcMonitor));
-    state.show_animation = Some(ShowAnimation {
-        started_at: now,
-        from,
-        target,
-    });
-    state.position = from;
-    start_clip(state, ActiveClip::Jump, now);
-    update_frame_at(state, now)
+    with_state(hwnd, |state| {
+        cancel_show_animation(state);
+        cancel_hide_animation(state);
+        let size = (state.surface.width() as i32, state.surface.height() as i32);
+        let target = clamp_position(state.position, size, info.monitorInfo.rcWork);
+        let from = (target.0, hide_target_y(target.1, size.1, info.monitorInfo.rcMonitor));
+        state.show_animation = Some(ShowAnimation {
+            started_at: now,
+            from,
+            target,
+        });
+        state.position = from;
+        start_clip(state, ActiveClip::Jump, now);
+    })
+    .ok_or_else(Error::from_win32)?;
+    hide_bubble(hwnd);
+    update_frame_at(hwnd, now)
 }
 
-fn update_show_animation(hwnd: HWND, state: &mut PetWindowState, now: Instant) -> Result<()> {
-    let Some(animation) = state.show_animation.as_ref() else {
-        return Ok(());
-    };
-    let elapsed = now.saturating_duration_since(animation.started_at).as_millis();
-    let progress = elapsed.min(HIDE_ANIMATION_DURATION_MS);
-    let target = animation.target;
-    let y = animation.from.1 + (target.1 - animation.from.1) * progress as i32 / HIDE_ANIMATION_DURATION_MS as i32;
-    set_position(hwnd, state, (target.0, y))?;
-    if elapsed >= HIDE_ANIMATION_DURATION_MS {
-        state.show_animation = None;
+fn update_show_animation(hwnd: HWND, now: Instant) -> Result<()> {
+    let position = with_state(hwnd, |state| {
+        let animation = state.show_animation.as_ref()?;
+        let elapsed = now.saturating_duration_since(animation.started_at).as_millis();
+        let progress = elapsed.min(HIDE_ANIMATION_DURATION_MS);
+        let target = animation.target;
+        let y = animation.from.1 + (target.1 - animation.from.1) * progress as i32 / HIDE_ANIMATION_DURATION_MS as i32;
+        if elapsed >= HIDE_ANIMATION_DURATION_MS {
+            state.show_animation = None;
+        }
+        Some((target.0, y))
+    })
+    .flatten();
+    if let Some(position) = position {
+        set_position(hwnd, position)?;
     }
     Ok(())
 }
@@ -526,6 +585,13 @@ fn attach_state(hwnd: HWND, state: PetWindowState) {
     }
 }
 
+// The closure may only access local data; callbacks run after it returns.
+fn with_state<R>(hwnd: HWND, update: impl FnOnce(&mut PetWindowState) -> R) -> Option<R> {
+    let raw = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut PetWindowState;
+    unsafe { raw.as_mut().map(update) }
+}
+
+#[cfg(test)]
 fn state_mut(hwnd: HWND) -> Option<&'static mut PetWindowState> {
     let raw = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut PetWindowState;
     unsafe { raw.as_mut() }
@@ -556,56 +622,43 @@ unsafe extern "system" fn pet_window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
             if !unsafe { IsWindowVisible(hwnd).as_bool() } {
                 return LRESULT(0);
             }
-            if let Some(state) = state_mut(hwnd) {
-                let _ = update_hide_animation(hwnd, state);
-                if !unsafe { IsWindowVisible(hwnd).as_bool() } {
-                    return LRESULT(0);
-                }
-                let _ = update_show_animation(hwnd, state, Instant::now());
-                let _ = update_speech_bubble(hwnd, state);
-                let _ = update_frame(state);
+            let _ = update_hide_animation(hwnd);
+            if !unsafe { IsWindowVisible(hwnd).as_bool() } {
+                return LRESULT(0);
             }
+            let _ = update_show_animation(hwnd, Instant::now());
+            let _ = update_speech_bubble(hwnd);
+            let _ = update_frame(hwnd);
             LRESULT(0)
         }
         WM_DPICHANGED => {
-            if let Some(state) = state_mut(hwnd) {
-                let rect = unsafe { &*(lparam.0 as *const RECT) };
-                let _ = apply_pet_dpi(state, (wparam.0 & 0xffff) as u32, (rect.left, rect.top));
-            }
+            let rect = unsafe { *(lparam.0 as *const RECT) };
+            let _ = apply_pet_dpi(hwnd, (wparam.0 & 0xffff) as u32, (rect.left, rect.top));
             LRESULT(0)
         }
         WM_NCHITTEST => {
-            if let Some(state) = state_mut(hwnd) {
-                if !hit_test_current_frame(hwnd, state, lparam) {
-                    return LRESULT(HTTRANSPARENT as isize);
-                }
+            if with_state(hwnd, |state| !hit_test_current_frame(hwnd, state, lparam)).unwrap_or(false) {
+                return LRESULT(HTTRANSPARENT as isize);
             }
             LRESULT(HTCLIENT as isize)
         }
         WM_LBUTTONDOWN => {
-            if let Some(state) = state_mut(hwnd) {
-                let _ = begin_drag(hwnd, state);
-            }
+            let _ = begin_drag(hwnd);
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
-            if let Some(state) = state_mut(hwnd) {
-                let _ = move_drag(hwnd, state);
-            }
+            let _ = move_drag(hwnd);
             LRESULT(0)
         }
         WM_LBUTTONUP => {
-            if let Some(state) = state_mut(hwnd) {
-                let _ = end_drag(hwnd, state);
-            }
+            let _ = end_drag(hwnd);
             LRESULT(0)
         }
         WM_CAPTURECHANGED => {
-            if let Some(state) = state_mut(hwnd) {
-                state.drag = None;
-            }
+            with_state(hwnd, |state| state.drag = None);
             LRESULT(0)
         }
+
         WM_RBUTTONUP => {
             let _ = show_context_menu(hwnd);
             LRESULT(0)
@@ -616,10 +669,10 @@ unsafe extern "system" fn pet_window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
             }
             let raw = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
             if raw != 0 {
-                let _ = unsafe { Box::from_raw(raw as *mut PetWindowState) };
                 unsafe {
                     SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                 }
+                drop(unsafe { Box::from_raw(raw as *mut PetWindowState) });
             }
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
@@ -652,26 +705,37 @@ fn start_clip(state: &mut PetWindowState, clip: ActiveClip, now: Instant) {
     state.player.play(now);
     state.last_frame = None;
 }
-fn begin_drag(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
-    // Dragging interrupts the entrance at its current on-screen position.
-    state.show_animation = None;
-    if state.active_clip == ActiveClip::Jump {
-        let now = Instant::now();
-        start_clip(state, ActiveClip::Walk, now);
-        state.speech_bubble.start(now, SPEECH_BUBBLE_INITIAL_DELAY);
-    }
+fn begin_drag(hwnd: HWND) -> Result<()> {
     let mut pointer = POINT::default();
-    unsafe { GetCursorPos(&mut pointer)? };
+    unsafe {
+        GetCursorPos(&mut pointer)?;
+    }
     let mut window = RECT::default();
-    unsafe { GetWindowRect(hwnd, &mut window)? };
-    state.drag = Some(DragState {
-        pointer_start: pointer,
-        window_start: POINT {
-            x: window.left,
-            y: window.top,
-        },
-        moved: false,
-    });
+    unsafe {
+        GetWindowRect(hwnd, &mut window)?;
+    }
+    let start = with_state(hwnd, |state| {
+        state.show_animation = None;
+        let start = if state.active_clip == ActiveClip::Jump {
+            start_clip(state, ActiveClip::Walk, Instant::now());
+            true
+        } else {
+            false
+        };
+        state.drag = Some(DragState {
+            pointer_start: pointer,
+            window_start: POINT {
+                x: window.left,
+                y: window.top,
+            },
+            moved: false,
+        });
+        start
+    })
+    .ok_or_else(Error::from_win32)?;
+    if start {
+        start_bubble(hwnd, Instant::now());
+    }
     unsafe {
         let _ = SetCapture(hwnd);
     }
@@ -696,70 +760,57 @@ fn hit_test_current_frame(hwnd: HWND, state: &PetWindowState, lparam: LPARAM) ->
     state.surface.pixels()[((y as u32 * state.surface.width() + x as u32) * 4 + 3) as usize] >= 16
 }
 
-fn move_drag(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
-    let Some(drag) = state.drag.as_mut() else {
-        return Ok(());
-    };
+fn move_drag(hwnd: HWND) -> Result<()> {
     let mut pointer = POINT::default();
-    unsafe { GetCursorPos(&mut pointer)? };
-    drag.moved = drag.moved || movement_exceeded(drag.pointer_start, pointer);
-    let position = clamp_drag_position(
-        (
-            drag.window_start.x + pointer.x - drag.pointer_start.x,
-            drag.window_start.y + pointer.y - drag.pointer_start.y,
-        ),
-        (state.surface.width() as i32, state.surface.height() as i32),
-        monitor_work_area_at_point(pointer)?,
-    );
-    set_position(hwnd, state, position)
+    unsafe {
+        GetCursorPos(&mut pointer)?;
+    }
+    let work_area = monitor_work_area_at_point(pointer)?;
+    let position = with_state(hwnd, |state| {
+        let drag = state.drag.as_mut()?;
+        drag.moved = drag.moved || movement_exceeded(drag.pointer_start, pointer);
+        Some(clamp_drag_position(
+            (
+                drag.window_start.x + pointer.x - drag.pointer_start.x,
+                drag.window_start.y + pointer.y - drag.pointer_start.y,
+            ),
+            (state.surface.width() as i32, state.surface.height() as i32),
+            work_area,
+        ))
+    })
+    .flatten();
+    if let Some(position) = position {
+        set_position(hwnd, position)?;
+    }
+    Ok(())
 }
 
-fn end_drag(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
-    let Some(drag) = state.drag.take() else {
+fn end_drag(hwnd: HWND) -> Result<()> {
+    let Some(Some((moved, owner, position))) = with_state(hwnd, |state| {
+        state.drag.take().map(|drag| (drag.moved, state.owner, state.position))
+    }) else {
         return Ok(());
     };
     unsafe {
         let _ = ReleaseCapture();
     }
-    if !drag.moved {
-        let _ = begin_hide_animation(hwnd, state);
-        post_pet_command(state.owner, PET_COMMAND_ACKNOWLEDGE);
-    }
-    if drag.moved {
-        if let Ok(position) = persistent_position(hwnd, state.position) {
-            let _ = save_pet_position(position);
+    if !moved {
+        // Capture loss can synchronously destroy the Pet. Do not acknowledge a stale click.
+        if with_state(hwnd, |_| ()).is_some() {
+            let _ = begin_hide_animation(hwnd);
+            if with_state(hwnd, |_| ()).is_some() {
+                post_pet_command(owner, PET_COMMAND_ACKNOWLEDGE);
+            }
         }
+    } else if let Ok(position) = persistent_position(hwnd, position) {
+        let _ = save_pet_position(position);
     }
     Ok(())
 }
 
 fn show_context_menu(hwnd: HWND) -> Result<()> {
-    // Do not hold a window-state reference across the menu's nested message loop.
-    let (owner, start_text, show_main_text, settings_text, about_text, exit_text) = {
-        let state = state_mut(hwnd).ok_or_else(Error::from_win32)?;
-        (
-            state.owner,
-            wide_null(&state.start_menu_text),
-            wide_null(&state.show_main_menu_text),
-            wide_null(&state.settings_menu_text),
-            wide_null(&state.about_menu_text),
-            wide_null(&state.exit_menu_text),
-        )
-    };
-    let menu = unsafe { CreatePopupMenu()? };
-    unsafe {
-        AppendMenuW(menu, MF_STRING, PET_MENU_START, PCWSTR(start_text.as_ptr()))?;
-        AppendMenuW(menu, MF_STRING, PET_MENU_SHOW_MAIN, PCWSTR(show_main_text.as_ptr()))?;
-        AppendMenuW(menu, MF_STRING, PET_MENU_SETTINGS, PCWSTR(settings_text.as_ptr()))?;
-        AppendMenuW(menu, MF_STRING, PET_MENU_ABOUT, PCWSTR(about_text.as_ptr()))?;
-        AppendMenuW(menu, MF_SEPARATOR, 0, None)?;
-        AppendMenuW(menu, MF_STRING, PET_MENU_EXIT, PCWSTR(exit_text.as_ptr()))?;
-    }
-
-    let mut point = POINT::default();
-    let command = unsafe {
-        GetCursorPos(&mut point)?;
-        let command = TrackPopupMenuEx(
+    show_context_menu_with(hwnd, |menu, point| unsafe {
+        TrackPopupMenuEx(
             menu,
             (TPM_LEFTALIGN | TPM_RIGHTBUTTON | TPM_RETURNCMD).0,
             point.x,
@@ -767,11 +818,53 @@ fn show_context_menu(hwnd: HWND) -> Result<()> {
             hwnd,
             None,
         )
-        .0 as usize;
-        let _ = DestroyMenu(menu);
-        command
-    };
+        .0 as usize
+    })
+}
 
+fn show_context_menu_with(
+    hwnd: HWND,
+    track: impl FnOnce(windows::Win32::UI::WindowsAndMessaging::HMENU, POINT) -> usize,
+) -> Result<()> {
+    // Do not hold a window-state reference across the menu's nested message loop.
+    let (owner, start_text, show_main_text, settings_text, about_text, exit_text) = {
+        with_state(hwnd, |state| {
+            (
+                state.owner,
+                wide_null(&state.start_menu_text),
+                wide_null(&state.show_main_menu_text),
+                wide_null(&state.settings_menu_text),
+                wide_null(&state.about_menu_text),
+                wide_null(&state.exit_menu_text),
+            )
+        })
+        .ok_or_else(Error::from_win32)?
+    };
+    let menu = unsafe { CreatePopupMenu()? };
+    let result = (|| -> Result<usize> {
+        unsafe {
+            AppendMenuW(menu, MF_STRING, PET_MENU_START, PCWSTR(start_text.as_ptr()))?;
+            AppendMenuW(menu, MF_STRING, PET_MENU_SHOW_MAIN, PCWSTR(show_main_text.as_ptr()))?;
+            AppendMenuW(menu, MF_STRING, PET_MENU_SETTINGS, PCWSTR(settings_text.as_ptr()))?;
+            AppendMenuW(menu, MF_STRING, PET_MENU_ABOUT, PCWSTR(about_text.as_ptr()))?;
+            AppendMenuW(menu, MF_SEPARATOR, 0, None)?;
+            AppendMenuW(menu, MF_STRING, PET_MENU_EXIT, PCWSTR(exit_text.as_ptr()))?;
+        }
+
+        let mut point = POINT::default();
+        unsafe {
+            GetCursorPos(&mut point)?;
+        }
+        Ok(track(menu, point))
+    })();
+    unsafe {
+        let _ = DestroyMenu(menu);
+    }
+    let command = result?;
+
+    if with_state(hwnd, |_| ()).is_none() {
+        return Ok(());
+    }
     match command {
         PET_MENU_START => post_pet_command(owner, PET_COMMAND_START),
         PET_MENU_SHOW_MAIN => post_pet_command(owner, PET_COMMAND_SHOW_MAIN),
@@ -802,29 +895,47 @@ fn movement_exceeded(start: POINT, current: POINT) -> bool {
     (current.x - start.x).abs() > CLICK_DRAG_THRESHOLD || (current.y - start.y).abs() > CLICK_DRAG_THRESHOLD
 }
 
-fn update_hide_animation(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
-    let Some(animation) = state.hide_animation.as_ref() else {
+fn update_hide_animation(hwnd: HWND) -> Result<()> {
+    let transition = with_state(hwnd, |state| {
+        let animation = state.hide_animation.as_ref()?;
+        let elapsed = animation.started_at.elapsed().as_millis();
+        let progress = elapsed.min(HIDE_ANIMATION_DURATION_MS);
+        let y = animation.from.1
+            + (animation.target_y - animation.from.1) * progress as i32 / HIDE_ANIMATION_DURATION_MS as i32;
+        Some((
+            (animation.from.0, y),
+            animation.restore_position,
+            elapsed >= HIDE_ANIMATION_DURATION_MS,
+            state.owner,
+            animation.started_at,
+        ))
+    })
+    .flatten();
+    let Some((position, restore_position, finished, owner, started_at)) = transition else {
         return Ok(());
     };
-    let elapsed = animation.started_at.elapsed().as_millis();
-    let progress = elapsed.min(HIDE_ANIMATION_DURATION_MS);
-    let from = animation.from;
-    let target_y = animation.target_y;
-    let restore_position = animation.restore_position;
-    let y = from.1 + (target_y - from.1) * progress as i32 / HIDE_ANIMATION_DURATION_MS as i32;
-    set_position(hwnd, state, (from.0, y))?;
-    if elapsed >= HIDE_ANIMATION_DURATION_MS {
-        state.hide_animation = None;
-        state.position = restore_position;
-        unsafe {
-            let _ = ShowWindow(hwnd, SW_HIDE);
-            // Release resources through the owner after this callback returns.
-            let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
-                Some(state.owner),
-                WM_PET_COMMAND,
-                WPARAM(PET_COMMAND_HIDDEN),
-                LPARAM(hwnd.0 as isize),
-            );
+    set_position(hwnd, position)?;
+    if finished {
+        let active = with_state(hwnd, |state| {
+            if state.hide_animation.as_ref().map(|animation| animation.started_at) != Some(started_at) {
+                return false;
+            }
+            state.hide_animation = None;
+            state.position = restore_position;
+            true
+        })
+        .unwrap_or(false);
+        if active {
+            unsafe {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+                // Release through the owner after this callback returns.
+                let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                    Some(owner),
+                    WM_PET_COMMAND,
+                    WPARAM(PET_COMMAND_HIDDEN),
+                    LPARAM(hwnd.0 as isize),
+                );
+            }
         }
     }
     Ok(())
@@ -836,8 +947,8 @@ fn cancel_hide_animation(state: &mut PetWindowState) {
     }
 }
 
-fn set_position(hwnd: HWND, state: &mut PetWindowState, position: (i32, i32)) -> Result<()> {
-    state.position = position;
+fn set_position(hwnd: HWND, position: (i32, i32)) -> Result<()> {
+    with_state(hwnd, |state| state.position = position).ok_or_else(Error::from_win32)?;
     unsafe {
         SetWindowPos(
             hwnd,
@@ -849,37 +960,58 @@ fn set_position(hwnd: HWND, state: &mut PetWindowState, position: (i32, i32)) ->
             SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
         )?;
     }
-    state.renderer.submit(
-        &state.surface,
-        SurfacePoint {
-            x: state.position.0,
-            y: state.position.1,
-        },
-    )?;
-    state.speech_bubble.set_position(
-        state.position,
-        (state.surface.width() as i32, state.surface.height() as i32),
-    )?;
-    Ok(())
+    submit_frame(hwnd)?;
+    position_bubble(hwnd)
 }
 
-fn update_speech_bubble(hwnd: HWND, state: &mut PetWindowState) -> Result<()> {
-    if state.hide_animation.is_some()
-        || state.active_clip == ActiveClip::Jump
-        || !unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(hwnd).as_bool() }
-    {
-        state.speech_bubble.hide();
-        sync_bubble_animation(state, false, Instant::now());
-        return Ok(());
-    }
+fn position_bubble(hwnd: HWND) -> Result<()> {
+    let (bubble, position, size) = with_state(hwnd, |state| {
+        (
+            state.speech_bubble.clone(),
+            state.position,
+            (state.surface.width() as i32, state.surface.height() as i32),
+        )
+    })
+    .ok_or_else(Error::from_win32)?;
+    let result = if let Ok(bubble) = bubble.try_borrow() {
+        bubble.set_position(position, size)
+    } else {
+        Ok(())
+    };
+    result
+}
 
+fn update_speech_bubble(hwnd: HWND) -> Result<()> {
+    let Some((bubble, hidden, position, size)) = with_state(hwnd, |state| {
+        (
+            state.speech_bubble.clone(),
+            state.hide_animation.is_some() || state.active_clip == ActiveClip::Jump,
+            state.position,
+            (state.surface.width() as i32, state.surface.height() as i32),
+        )
+    }) else {
+        return Ok(());
+    };
     let now = Instant::now();
-    let visible = state.speech_bubble.update(
-        state.position,
-        (state.surface.width() as i32, state.surface.height() as i32),
-        now,
-    )?;
-    sync_bubble_animation(state, visible, now);
+    let visible = {
+        let Ok(mut bubble) = bubble.try_borrow_mut() else {
+            return Ok(());
+        };
+        let Some((language, start)) = with_state(hwnd, |state| (state.language, state.bubble_start.take())) else {
+            return Ok(());
+        };
+        if let Some(start) = start {
+            bubble.start(start, SPEECH_BUBBLE_INITIAL_DELAY);
+        }
+        bubble.set_language(language)?;
+        if hidden || !unsafe { IsWindowVisible(hwnd).as_bool() } {
+            bubble.hide();
+            false
+        } else {
+            bubble.update(position, size, now)?
+        }
+    };
+    with_state(hwnd, |state| sync_bubble_animation(state, visible, now));
     Ok(())
 }
 
@@ -922,61 +1054,85 @@ fn clamp_drag_position(position: (i32, i32), size: (i32, i32), work_area: RECT) 
     (position.0.clamp(min_x, max_x), position.1.clamp(min_y, max_y))
 }
 
-fn update_frame(state: &mut PetWindowState) -> Result<()> {
-    update_frame_at(state, Instant::now())
+fn update_frame(hwnd: HWND) -> Result<()> {
+    update_frame_at(hwnd, Instant::now())
 }
 
-fn update_frame_at(state: &mut PetWindowState, now: Instant) -> Result<()> {
+fn update_frame_at(hwnd: HWND, now: Instant) -> Result<()> {
+    let Some(renderer) = with_state(hwnd, |state| state.renderer.clone()) else {
+        return Err(Error::from_win32());
+    };
+    // A nested timer must not borrow the renderer already submitting this Pet.
+    if renderer.try_borrow_mut().is_err() {
+        return Ok(());
+    }
+    let (changed, should_start_bubble) =
+        with_state(hwnd, |state| prepare_frame_at(state, now)).ok_or_else(Error::from_win32)??;
+    if should_start_bubble {
+        start_bubble(hwnd, now);
+    }
+    if changed {
+        submit_frame(hwnd)?;
+    }
+    Ok(())
+}
+
+fn prepare_frame_at(state: &mut PetWindowState, now: Instant) -> Result<(bool, bool)> {
     let mut selection = state.player.update(now);
+    let mut start_bubble = false;
     if state.active_clip == ActiveClip::Jump
         && state.show_animation.is_none()
         && selection.state == PlaybackState::Finished
     {
         start_clip(state, ActiveClip::Walk, now);
-        state.speech_bubble.start(now, SPEECH_BUBBLE_INITIAL_DELAY);
+        start_bubble = true;
         selection = state.player.update(now);
     }
-
     let frame_key = (state.active_clip, selection.frame.id);
     if state.last_frame == Some(frame_key) {
-        return Ok(());
+        return Ok((false, start_bubble));
     }
-
     let frames = match state.active_clip {
         ActiveClip::Idle => &state.idle.frames,
         ActiveClip::Walk => &state.walk.frames,
         ActiveClip::Jump => &state.jump.frames,
     };
     let frame = frames.get(selection.frame.id as usize).ok_or_else(Error::from_win32)?;
-    if let Some(surface) = state.scaled_frames.get(&frame_key) {
-        surface.restore(&mut state.surface).map_err(|_| Error::from_win32())?;
+    let surface = Rc::make_mut(&mut state.surface);
+    if let Some(cached) = state.scaled_frames.get(&frame_key) {
+        cached.restore(surface).map_err(|_| Error::from_win32())?;
     } else {
-        state.surface.clear();
-        state
-            .surface
-            .draw_scaled_frame(frame)
-            .map_err(|_| Error::from_win32())?;
-        // Resample each immutable character frame once per DPI, rather than
-        // repeating bilinear scaling every time the animation loops.
-        // Jump is a one-shot entrance, so retaining all its frames would spend
-        // memory without saving work during the looping reminder.
-        if state.active_clip != ActiveClip::Jump
-            && (state.surface.width(), state.surface.height()) != (frame.width, frame.height)
-        {
-            state
-                .scaled_frames
-                .insert(frame_key, CachedSurface::new(&state.surface));
+        surface.clear();
+        surface.draw_scaled_frame(frame).map_err(|_| Error::from_win32())?;
+        // Retain resampled looping frames, but not the one-shot Jump.
+        if state.active_clip != ActiveClip::Jump && (surface.width(), surface.height()) != (frame.width, frame.height) {
+            state.scaled_frames.insert(frame_key, CachedSurface::new(surface));
         }
     }
-    state.renderer.submit(
-        &state.surface,
-        SurfacePoint {
-            x: state.position.0,
-            y: state.position.1,
-        },
-    )?;
     state.last_frame = Some(frame_key);
-    Ok(())
+    Ok((true, start_bubble))
+}
+
+fn submit_frame(hwnd: HWND) -> Result<()> {
+    let (renderer, surface, position) = with_state(hwnd, |state| {
+        (state.renderer.clone(), state.surface.clone(), state.position)
+    })
+    .ok_or_else(Error::from_win32)?;
+    let Ok(mut renderer) = renderer.try_borrow_mut() else {
+        with_state(hwnd, |state| state.last_frame = None);
+        return Ok(());
+    };
+    let result = renderer.submit(
+        &surface,
+        SurfacePoint {
+            x: position.0,
+            y: position.1,
+        },
+    );
+    if result.is_err() {
+        with_state(hwnd, |state| state.last_frame = None);
+    }
+    result
 }
 
 fn pet_surface(frame: &PreparedFrame, dpi: u32) -> Result<PixelSurface> {
@@ -990,25 +1146,29 @@ fn pet_surface(frame: &PreparedFrame, dpi: u32) -> Result<PixelSurface> {
     PixelSurface::new(scale(frame.width)?, scale(frame.height)?).map_err(|_| Error::from_win32())
 }
 
-fn apply_pet_dpi(state: &mut PetWindowState, dpi: u32, position: (i32, i32)) -> Result<()> {
-    let surface = pet_surface(&state.idle.frames[0], dpi)?;
-    state.dpi = dpi.max(96);
-    state.surface = surface;
-    state.scaled_frames.clear();
-    state.position = position;
-    state.last_frame = None;
-    // Rebase an active drag so the next mouse message does not undo the suggested position.
-    if let Some(drag) = state.drag.as_mut() {
-        unsafe { GetCursorPos(&mut drag.pointer_start)? };
-        drag.window_start = POINT {
-            x: position.0,
-            y: position.1,
-        };
+fn apply_pet_dpi(hwnd: HWND, dpi: u32, position: (i32, i32)) -> Result<()> {
+    let mut pointer = POINT::default();
+    unsafe {
+        GetCursorPos(&mut pointer)?;
     }
-    update_frame(state)?;
-    state
-        .speech_bubble
-        .set_position(position, (state.surface.width() as i32, state.surface.height() as i32))
+    with_state(hwnd, |state| -> Result<()> {
+        state.surface = Rc::new(pet_surface(&state.idle.frames[0], dpi)?);
+        state.dpi = dpi.max(96);
+        state.scaled_frames.clear();
+        state.position = position;
+        state.last_frame = None;
+        if let Some(drag) = state.drag.as_mut() {
+            drag.pointer_start = pointer;
+            drag.window_start = POINT {
+                x: position.0,
+                y: position.1,
+            };
+        }
+        Ok(())
+    })
+    .ok_or_else(Error::from_win32)??;
+    update_frame(hwnd)?;
+    position_bubble(hwnd)
 }
 
 #[cfg(test)]
@@ -1019,13 +1179,162 @@ mod tests {
     use super::{clamp_drag_position, clamp_position, hide_target_y, movement_exceeded};
 
     #[test]
+    fn position_callback_can_destroy_pet_and_release_attached_resources() {
+        use super::*;
+        use std::cell::Cell;
+        use windows::Win32::UI::{
+            Shell::{DefSubclassProc, SetWindowSubclass},
+            WindowsAndMessaging::{IsWindow, WM_WINDOWPOSCHANGED, WM_WINDOWPOSCHANGING},
+        };
+        struct Callback {
+            renderer: std::rc::Weak<RefCell<LayeredRenderer>>,
+            renderer_alive: Cell<bool>,
+            pointer_cleared: Cell<bool>,
+        }
+        unsafe extern "system" fn callback(
+            hwnd: HWND,
+            msg: u32,
+            wp: WPARAM,
+            lp: LPARAM,
+            _: usize,
+            data: usize,
+        ) -> LRESULT {
+            if matches!(msg, WM_WINDOWPOSCHANGING | WM_WINDOWPOSCHANGED) {
+                let data = unsafe { &*(data as *const Callback) };
+                if let Some(renderer) = data.renderer.upgrade() {
+                    data.renderer_alive.set(renderer.try_borrow_mut().is_ok());
+                }
+                unsafe {
+                    let _ = DestroyWindow(hwnd);
+                }
+                data.pointer_cleared
+                    .set(unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } == 0);
+                return LRESULT(0);
+            }
+            unsafe { DefSubclassProc(hwnd, msg, wp, lp) }
+        }
+        let pet = hidden_test_pet();
+        let renderer = with_state(pet.hwnd, |state| Rc::downgrade(&state.renderer)).unwrap();
+        let data = Callback {
+            renderer,
+            renderer_alive: Cell::new(false),
+            pointer_cleared: Cell::new(false),
+        };
+        assert!(unsafe { SetWindowSubclass(pet.hwnd, Some(callback), 1, &data as *const _ as usize).as_bool() });
+        assert!(set_position(pet.hwnd, (120, 120)).is_err());
+        assert!(data.renderer_alive.get());
+        assert!(data.pointer_cleared.get());
+        assert!(data.renderer.upgrade().is_none());
+        assert!(!unsafe { IsWindow(Some(pet.hwnd)).as_bool() });
+    }
+
+    #[test]
+    fn nested_timer_defers_rendering_until_renderer_is_available() {
+        use super::*;
+        use windows::Win32::UI::WindowsAndMessaging::SendMessageW;
+        let pet = hidden_test_pet();
+        pet.show_reminder().unwrap();
+        let renderer = with_state(pet.hwnd, |state| {
+            state.last_frame = None;
+            state.renderer.clone()
+        })
+        .unwrap();
+        let submitting = renderer.borrow_mut();
+        unsafe {
+            SendMessageW(pet.hwnd, WM_TIMER, Some(WPARAM(PET_TIMER_ID)), None);
+        }
+        assert!(with_state(pet.hwnd, |state| state.last_frame.is_none()).unwrap());
+        drop(submitting);
+        unsafe {
+            SendMessageW(pet.hwnd, WM_TIMER, Some(WPARAM(PET_TIMER_ID)), None);
+        }
+        assert!(with_state(pet.hwnd, |state| state.last_frame.is_some()).unwrap());
+        pet.hide();
+    }
+
+    #[test]
+    fn busy_bubble_retains_start_and_language_changes_for_next_update() {
+        use super::*;
+        let pet = hidden_test_pet();
+        pet.show_reminder().unwrap();
+        let bubble = with_state(pet.hwnd, |state| state.speech_bubble.clone()).unwrap();
+        let updating = bubble.borrow_mut();
+        let now = Instant::now();
+        start_bubble(pet.hwnd, now);
+        pet.set_language(Language::Chinese);
+        update_speech_bubble(pet.hwnd).unwrap();
+        assert_eq!(
+            with_state(pet.hwnd, |state| (state.bubble_start, state.language)).unwrap(),
+            (Some(now), Language::Chinese)
+        );
+        drop(updating);
+        update_speech_bubble(pet.hwnd).unwrap();
+        assert!(with_state(pet.hwnd, |state| state.bubble_start.is_none()).unwrap());
+        pet.hide();
+    }
+
+    #[test]
+    fn release_capture_can_destroy_pet_without_posting_stale_acknowledgement() {
+        use super::*;
+        use windows::Win32::UI::{
+            Shell::{DefSubclassProc, SetWindowSubclass},
+            WindowsAndMessaging::{MSG, PM_REMOVE, PeekMessageW},
+        };
+        unsafe extern "system" fn callback(
+            hwnd: HWND,
+            msg: u32,
+            wp: WPARAM,
+            lp: LPARAM,
+            _: usize,
+            _: usize,
+        ) -> LRESULT {
+            if msg == WM_CAPTURECHANGED {
+                unsafe {
+                    let _ = DestroyWindow(hwnd);
+                }
+                return LRESULT(0);
+            }
+            unsafe { DefSubclassProc(hwnd, msg, wp, lp) }
+        }
+        let pet = hidden_test_pet();
+        begin_drag(pet.hwnd).unwrap();
+        assert!(unsafe { SetWindowSubclass(pet.hwnd, Some(callback), 1, 0).as_bool() });
+        end_drag(pet.hwnd).unwrap();
+        assert!(with_state(pet.hwnd, |_| ()).is_none());
+        let mut message = MSG::default();
+        assert!(!unsafe { PeekMessageW(&mut message, None, WM_PET_COMMAND, WM_PET_COMMAND, PM_REMOVE).as_bool() });
+    }
+
+    #[test]
+    fn menu_discards_command_when_pet_is_destroyed_during_tracking() {
+        use super::*;
+        use windows::Win32::UI::WindowsAndMessaging::{IsMenu, MSG, PM_REMOVE, PeekMessageW};
+        let pet = hidden_test_pet();
+        let mut menu_handle = Default::default();
+        show_context_menu_with(pet.hwnd, |menu, _| {
+            menu_handle = menu;
+            // Model messages dispatched by TrackPopupMenuEx's nested message loop.
+            unsafe {
+                DestroyWindow(pet.hwnd).unwrap();
+            }
+            PET_MENU_START
+        })
+        .unwrap();
+        assert!(!unsafe { IsMenu(menu_handle).as_bool() });
+        let mut message = MSG::default();
+        assert!(!unsafe { PeekMessageW(&mut message, None, WM_PET_COMMAND, WM_PET_COMMAND, PM_REMOVE).as_bool() });
+    }
+
+    #[test]
     fn failed_animation_replacement_restores_frames_buffers_and_playback() {
         use super::*;
         let pet = hidden_test_pet();
         let state = state_mut(pet.hwnd).unwrap();
-        apply_pet_dpi(state, 144, state.position).unwrap();
+        apply_pet_dpi(pet.hwnd, 144, state.position).unwrap();
+        let state = state_mut(pet.hwnd).unwrap();
         state.player.play(Instant::now());
-        update_frame(state).unwrap();
+        update_frame(pet.hwnd).unwrap();
+        let state = state_mut(pet.hwnd).unwrap();
         let original = CharacterAnimations {
             idle: state.idle.clone(),
             walk: state.walk.clone(),
@@ -1061,7 +1370,7 @@ mod tests {
             assert_eq!(state.last_frame, last_frame);
             assert_eq!(state.player.state(), PlaybackState::Playing);
             state.last_frame = None;
-            update_frame_at(state, started_at + Duration::from_millis(240)).unwrap();
+            update_frame_at(pet.hwnd, started_at + Duration::from_millis(240)).unwrap();
         }
         pet.show_reminder().unwrap();
         assert!(unsafe { IsWindowVisible(pet.hwnd).as_bool() });
@@ -1153,16 +1462,17 @@ mod tests {
                 let mut expected = pet_surface(current_frame, state.dpi).unwrap();
                 expected.draw_scaled_frame(current_frame).unwrap();
                 assert_eq!(
-                    state.surface, expected,
+                    *state.surface, expected,
                     "character switch must discard previous cached pixels"
                 );
-                apply_pet_dpi(state, dpi, (100, 400)).unwrap();
+                apply_pet_dpi(pet.hwnd, dpi, (100, 400)).unwrap();
                 for clip in [ActiveClip::Walk, ActiveClip::Idle] {
                     let now = Instant::now();
-                    start_clip(state, clip, now);
+                    with_state(pet.hwnd, |state| start_clip(state, clip, now)).unwrap();
                     for index in 0..20 {
                         let time = now + Duration::from_millis(index * 120);
-                        update_frame_at(state, time).unwrap();
+                        update_frame_at(pet.hwnd, time).unwrap();
+                        let state = state_mut(pet.hwnd).unwrap();
                         let frame_id = state.last_frame.unwrap().1 as usize;
                         let animation = if clip == ActiveClip::Walk {
                             &state.walk
@@ -1172,13 +1482,16 @@ mod tests {
                         let mut expected = pet_surface(&animation.frames[frame_id], dpi).unwrap();
                         expected.draw_scaled_frame(&animation.frames[frame_id]).unwrap();
                         assert_eq!(
-                            state.surface, expected,
+                            *state.surface, expected,
                             "{character} {clip:?} dpi={dpi} frame={frame_id}"
                         );
                     }
                 }
                 if dpi == 96 {
-                    assert!(state.scaled_frames.is_empty(), "native-size frames need no extra cache");
+                    assert!(
+                        with_state(pet.hwnd, |state| state.scaled_frames.is_empty()).unwrap(),
+                        "native-size frames need no extra cache"
+                    );
                 }
             }
         }
@@ -1223,25 +1536,28 @@ mod tests {
         pet.show_reminder().unwrap();
         let mut costs = Vec::new();
         for dpi in [96, 144, 192] {
-            let state = state_mut(pet.hwnd).unwrap();
-            apply_pet_dpi(state, dpi, (100, 400)).unwrap();
-            state.show_animation = None;
+            apply_pet_dpi(pet.hwnd, dpi, (100, 400)).unwrap();
             let now = Instant::now();
-            start_clip(state, ActiveClip::Walk, now);
+            with_state(pet.hwnd, |state| {
+                state.show_animation = None;
+                start_clip(state, ActiveClip::Walk, now);
+            })
+            .unwrap();
             // Measure steady looping after every frame has appeared once.
             for index in 0..10 {
-                update_frame_at(state, now + Duration::from_millis(index * 100)).unwrap();
+                update_frame_at(pet.hwnd, now + Duration::from_millis(index * 100)).unwrap();
             }
             let before = cpu_ms();
             for index in 10..70 {
-                update_frame_at(state, now + Duration::from_millis(index * 100)).unwrap();
+                update_frame_at(pet.hwnd, now + Duration::from_millis(index * 100)).unwrap();
             }
             let render_ms = cpu_ms() - before;
+            let state = state_mut(pet.hwnd).unwrap();
             let cache_bytes: usize = state.scaled_frames.values().map(CachedSurface::byte_len).sum();
-            state.speech_bubble.start(now, Duration::ZERO);
+            state.speech_bubble.borrow_mut().start(now, Duration::ZERO);
             let before = cpu_ms();
             for _ in 0..360 {
-                update_speech_bubble(pet.hwnd, state).unwrap();
+                update_speech_bubble(pet.hwnd).unwrap();
             }
             let bubble_ms = cpu_ms() - before;
             eprintln!(
@@ -1428,8 +1744,8 @@ mod tests {
             attach_state(
                 hwnd,
                 PetWindowState {
-                    renderer: LayeredRenderer::new(hwnd).unwrap(),
-                    surface: pet_surface(&frame, 96).unwrap(),
+                    renderer: Rc::new(RefCell::new(LayeredRenderer::new(hwnd).unwrap())),
+                    surface: Rc::new(pet_surface(&frame, 96).unwrap()),
                     scaled_frames: HashMap::new(),
                     dpi: 96,
                     position: (100, 100),
@@ -1443,7 +1759,11 @@ mod tests {
                     drag: None,
                     hide_animation: None,
                     show_animation: None,
-                    speech_bubble: SpeechBubbleController::create(instance, hwnd, Language::English).unwrap(),
+                    speech_bubble: Rc::new(RefCell::new(
+                        SpeechBubbleController::create(instance, hwnd, Language::English).unwrap(),
+                    )),
+                    language: Language::English,
+                    bubble_start: None,
                     start_menu_text: String::new(),
                     show_main_menu_text: String::new(),
                     settings_menu_text: String::new(),
@@ -1563,7 +1883,7 @@ mod tests {
             }
             check_topmost();
             let state = state_mut(pet.hwnd).unwrap();
-            set_position(pet.hwnd, state, state.position).unwrap();
+            set_position(pet.hwnd, state.position).unwrap();
             check_topmost();
             pet.hide();
             pet.show_reminder().unwrap();
@@ -1626,14 +1946,14 @@ mod tests {
         pet.hide_animated().unwrap();
         let state = state_mut(pet.hwnd).unwrap();
         state.hide_animation.as_mut().unwrap().started_at = Instant::now() - Duration::from_millis(90);
-        update_hide_animation(pet.hwnd, state).unwrap();
+        update_hide_animation(pet.hwnd).unwrap();
         pet.show_reminder().unwrap();
         let state = state_mut(pet.hwnd).unwrap();
         assert!(unsafe { IsWindowVisible(pet.hwnd).as_bool() });
         assert!(state.hide_animation.is_none());
         assert_eq!(state.active_clip, ActiveClip::Jump);
         assert_eq!(state.show_animation.as_ref().unwrap().target, target);
-        assert!(!state.speech_bubble.is_visible());
+        assert!(!state.speech_bubble.borrow_mut().is_visible());
     }
 
     #[test]
@@ -1650,38 +1970,45 @@ mod tests {
         .unwrap();
         state.jump.frames.push(state.jump.frames[0].clone());
         let now = Instant::now();
-        begin_show_animation(pet.hwnd, state, now).unwrap();
+        begin_show_animation(pet.hwnd, now).unwrap();
+        let state = state_mut(pet.hwnd).unwrap();
         let entrance = state.show_animation.as_ref().unwrap();
         let (from, target) = (entrance.from, entrance.target);
         let monitor = unsafe { MonitorFromWindow(pet.hwnd, MONITOR_DEFAULTTONEAREST) };
         let bounds = monitor_info_ex(monitor).unwrap().monitorInfo.rcMonitor;
         assert!(from.1 + state.surface.height() as i32 <= bounds.top || from.1 >= bounds.bottom);
         assert_eq!(state.active_clip, ActiveClip::Jump);
-        assert!(!state.speech_bubble.is_visible());
+        assert!(!state.speech_bubble.borrow_mut().is_visible());
         sync_bubble_animation(state, true, now);
         assert_eq!(state.active_clip, ActiveClip::Jump);
-        update_show_animation(pet.hwnd, state, now + Duration::from_millis(90)).unwrap();
+        update_show_animation(pet.hwnd, now + Duration::from_millis(90)).unwrap();
+        let state = state_mut(pet.hwnd).unwrap();
         assert_eq!(state.position.1, from.1 + (target.1 - from.1) / 2);
-        update_show_animation(pet.hwnd, state, now + Duration::from_millis(180)).unwrap();
+        update_show_animation(pet.hwnd, now + Duration::from_millis(180)).unwrap();
+        let state = state_mut(pet.hwnd).unwrap();
         assert_eq!(state.position, target);
         assert!(state.show_animation.is_none());
-        update_frame_at(state, now + Duration::from_millis(399)).unwrap();
+        update_frame_at(pet.hwnd, now + Duration::from_millis(399)).unwrap();
+        let state = state_mut(pet.hwnd).unwrap();
         assert_eq!(state.active_clip, ActiveClip::Jump);
-        update_frame_at(state, now + Duration::from_millis(400)).unwrap();
+        update_frame_at(pet.hwnd, now + Duration::from_millis(400)).unwrap();
+        let state = state_mut(pet.hwnd).unwrap();
         assert_eq!(state.active_clip, ActiveClip::Walk);
         let visible = state
             .speech_bubble
+            .borrow_mut()
             .update(state.position, (3, 2), now + Duration::from_millis(899))
             .unwrap();
         assert!(!visible);
         let visible = state
             .speech_bubble
+            .borrow_mut()
             .update(state.position, (3, 2), now + Duration::from_millis(900))
             .unwrap();
         assert!(visible);
         sync_bubble_animation(state, visible, now + Duration::from_millis(900));
         assert_eq!(state.active_clip, ActiveClip::Idle);
-        state.speech_bubble.hide();
+        state.speech_bubble.borrow_mut().hide();
     }
 
     #[test]
@@ -1693,13 +2020,15 @@ mod tests {
         state.jump.clip =
             AnimationClip::new(vec![Frame { id: 0 }], Duration::from_millis(120), LoopMode::Once).unwrap();
         let now = Instant::now();
-        begin_show_animation(pet.hwnd, state, now).unwrap();
-        update_frame_at(state, now + Duration::from_millis(120)).unwrap();
+        begin_show_animation(pet.hwnd, now).unwrap();
+        update_frame_at(pet.hwnd, now + Duration::from_millis(120)).unwrap();
+        let state = state_mut(pet.hwnd).unwrap();
         assert_eq!(state.active_clip, ActiveClip::Jump);
-        update_show_animation(pet.hwnd, state, now + Duration::from_millis(180)).unwrap();
-        update_frame_at(state, now + Duration::from_millis(180)).unwrap();
+        update_show_animation(pet.hwnd, now + Duration::from_millis(180)).unwrap();
+        update_frame_at(pet.hwnd, now + Duration::from_millis(180)).unwrap();
+        let state = state_mut(pet.hwnd).unwrap();
         assert_eq!(state.active_clip, ActiveClip::Walk);
-        assert!(!state.speech_bubble.is_visible());
+        assert!(!state.speech_bubble.borrow_mut().is_visible());
     }
 
     #[test]
@@ -1714,20 +2043,23 @@ mod tests {
         let state = state_mut(pet.hwnd).unwrap();
         assert_eq!(state.active_clip, ActiveClip::Jump);
         let now = state.show_animation.as_ref().unwrap().started_at + Duration::from_millis(180);
-        update_show_animation(pet.hwnd, state, now).unwrap();
-        update_frame_at(state, now).unwrap();
+        update_show_animation(pet.hwnd, now).unwrap();
+        update_frame_at(pet.hwnd, now).unwrap();
+        let state = state_mut(pet.hwnd).unwrap();
         assert_eq!(state.active_clip, ActiveClip::Walk);
-        assert!(!state.speech_bubble.is_visible());
-        begin_drag(pet.hwnd, state).unwrap();
+        assert!(!state.speech_bubble.borrow_mut().is_visible());
+        begin_drag(pet.hwnd).unwrap();
+        let state = state_mut(pet.hwnd).unwrap();
         assert_eq!(state.active_clip, ActiveClip::Walk);
         sync_bubble_animation(state, true, Instant::now());
         assert_eq!(state.active_clip, ActiveClip::Idle);
-        begin_drag(pet.hwnd, state).unwrap();
+        begin_drag(pet.hwnd).unwrap();
+        let state = state_mut(pet.hwnd).unwrap();
         assert_eq!(state.active_clip, ActiveClip::Idle);
         unsafe {
             let _ = ReleaseCapture();
         }
-        state.drag = None;
+        with_state(pet.hwnd, |state| state.drag = None).unwrap();
         pet.hide();
     }
 
