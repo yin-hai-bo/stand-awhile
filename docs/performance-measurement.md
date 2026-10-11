@@ -56,7 +56,7 @@ CSV 指标：
 
 ## 本次工具验证（Debug，非正式性能基线）
 
-正式 Release 数据待 Review、授权提交和干净工作区测量后补充。
+正式 Release 测量已完成。基线报告 `performance-baseline-*.md` 和原始数据 `performance-data/` 仅在本地保留，由 .gitignore 排除。以下保留先前 Debug 工具验证记录。
 Debug 加载基准已完整运行：cat 30 次，像素 28,773,696 字节，中位数 253.640 ms；dog 30 次，像素 29,467,984 字节，中位数 259.310 ms。
 这些数值仅说明工具能输出重复采样，不用于判断 Release 卡顿或决定优化。
 

@@ -23,3 +23,7 @@ target
 
 # Added by cargo
 /target
+
+# Local performance measurement data
+/docs/performance-data/
+/docs/performance-baseline-*.md
