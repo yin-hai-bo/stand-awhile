@@ -68,6 +68,13 @@ links, and animation credits; a flat separator precedes the credits. The version
 sits beside the title with their font baselines aligned using `tmAscent`. Its Win32 owner-drawn
 default OK button follows the theme, is anchored at the bottom right, and closes
 on click or Enter.
+Compiled custom controls also use owned state snapshots and short mutation
+closures. Control buttons perform capture/focus calls outside state borrows and
+discard clicks if a callback destroys or disables the button. Hyperlink fonts
+use `Rc`; click callbacks use `Rc<RefCell<_>>` and run outside attached state,
+remaining alive if their parent closes. A click reentering the active callback
+is ignored. Both controls clear attached pointers before cleanup. Link creation
+parameters remain caller-owned while their callback transfers once into state.
 Pet animation uses a 16 ms window timer only while the Pet window
 is visible, including its entrance and exit animations, and `Instant` to
 select frames. Hiding the Pet stops that timer; queued timer messages do

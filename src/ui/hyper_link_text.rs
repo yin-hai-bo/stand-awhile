@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use std::{cell::RefCell, rc::Rc, sync::OnceLock};
 
 use crate::ui::theme::{is_dark_theme_active, paint_background};
 use windows::Win32::{
@@ -34,22 +34,25 @@ type HyperLinkCallback = Box<dyn FnMut(HWND)>;
 
 struct HyperLinkTextCreateParams {
     text: String,
-    on_click: HyperLinkCallback,
+    on_click: Option<HyperLinkCallback>,
 }
 
+#[derive(Clone)]
 struct HyperLinkTextState {
-    font: HFONT,
+    font: Rc<LinkFont>,
     dpi: u32,
     text: String,
     hovered: bool,
     tracking_mouse: bool,
-    on_click: HyperLinkCallback,
+    on_click: Rc<RefCell<HyperLinkCallback>>,
 }
 
-impl Drop for HyperLinkTextState {
+struct LinkFont(HFONT);
+
+impl Drop for LinkFont {
     fn drop(&mut self) {
         unsafe {
-            let _ = DeleteObject(self.font.into());
+            let _ = DeleteObject(self.0.into());
         }
     }
 }
@@ -68,11 +71,10 @@ impl HyperLinkText {
         let instance = current_module_instance()?;
         ensure_hyper_link_text_class_registered(instance)?;
 
-        let params = Box::new(HyperLinkTextCreateParams {
+        let mut params = HyperLinkTextCreateParams {
             text: text.to_owned(),
-            on_click: Box::new(on_click),
-        });
-        let raw_params = Box::into_raw(params);
+            on_click: Some(Box::new(on_click)),
+        };
 
         let hwnd_result = unsafe {
             CreateWindowExW(
@@ -87,16 +89,14 @@ impl HyperLinkText {
                 Some(parent),
                 None,
                 Some(instance),
-                Some(raw_params.cast()),
+                Some((&mut params as *mut HyperLinkTextCreateParams).cast()),
             )
         };
 
         let hwnd = match hwnd_result {
             Ok(hwnd) if !hwnd.0.is_null() => hwnd,
-            Ok(_) | Err(_) => {
-                let _ = unsafe { Box::from_raw(raw_params) };
-                return Err(Error::from_win32());
-            }
+            Err(error) => return Err(error),
+            Ok(_) => return Err(Error::from_win32()),
         };
 
         let link = Self {
@@ -144,18 +144,17 @@ impl HyperLinkText {
 
     pub fn measure_text_rect(&self, hdc: HDC) -> Result<RECT> {
         let state = hyper_link_state(self.hwnd).ok_or_else(Error::from_win32)?;
-        measure_text_rect(hdc, &self.text, state.font, state.dpi)
+        measure_text_rect(hdc, &self.text, state.font.0, state.dpi)
     }
 
     pub fn set_font(&self, base_font: HFONT, dpi: u32) -> Result<()> {
-        let state = hyper_link_state_mut(self.hwnd).ok_or_else(Error::from_win32)?;
-        let font = create_link_font(base_font)?;
-        let old_font = state.font;
-        state.font = font;
-        state.dpi = dpi;
-        unsafe {
-            let _ = DeleteObject(old_font.into());
-        }
+        let font = Rc::new(LinkFont(create_link_font(base_font)?));
+        let previous = with_hyper_link_state(self.hwnd, |state| {
+            state.dpi = dpi;
+            std::mem::replace(&mut state.font, font)
+        })
+        .ok_or_else(Error::from_win32)?;
+        drop(previous);
         self.invalidate();
         Ok(())
     }
@@ -204,18 +203,19 @@ unsafe extern "system" fn hyper_link_text_window_proc(hwnd: HWND, msg: u32, wpar
         WM_NCCREATE => {
             let create = unsafe { &*(lparam.0 as *const CREATESTRUCTW) };
             let raw_params = create.lpCreateParams as *mut HyperLinkTextCreateParams;
-            if raw_params.is_null() {
+            let Some(params) = (unsafe { raw_params.as_mut() }) else {
                 return LRESULT(0);
-            }
-
-            let params = unsafe { Box::from_raw(raw_params) };
+            };
+            let Some(on_click) = params.on_click.take() else {
+                return LRESULT(0);
+            };
             let state = Box::new(HyperLinkTextState {
-                font: HFONT::default(),
+                font: Rc::new(LinkFont(HFONT::default())),
                 dpi: unsafe { GetDpiForWindow(create.hwndParent) }.max(96),
-                text: params.text,
+                text: std::mem::take(&mut params.text),
                 hovered: false,
                 tracking_mouse: false,
-                on_click: params.on_click,
+                on_click: Rc::new(RefCell::new(on_click)),
             });
 
             unsafe {
@@ -224,20 +224,30 @@ unsafe extern "system" fn hyper_link_text_window_proc(hwnd: HWND, msg: u32, wpar
             LRESULT(1)
         }
         WM_PAINT => {
+            let state = hyper_link_state(hwnd);
             let mut paint = PAINTSTRUCT::default();
             let hdc = unsafe { BeginPaint(hwnd, &mut paint) };
             let _ = paint_background(&paint.rcPaint, hdc);
-            let _ = draw_hyper_link_text(hwnd, hdc, hyper_link_hovered(hwnd));
+            if let Some(state) = state {
+                let _ = draw_hyper_link_text(hwnd, hdc, &state);
+            }
             unsafe {
                 let _ = EndPaint(hwnd, &paint);
             }
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
-        WM_GETFONT => LRESULT(hyper_link_state(hwnd).map(|state| state.font.0 as isize).unwrap_or(0)),
+        WM_GETFONT => LRESULT(hyper_link_state(hwnd).map(|state| state.font.0.0 as isize).unwrap_or(0)),
         WM_MOUSEMOVE => {
-            if let Some(state) = hyper_link_state_mut(hwnd) {
-                if !state.tracking_mouse {
+            let changes = with_hyper_link_state(hwnd, |state| {
+                let track = !state.tracking_mouse;
+                let invalidate = !state.hovered;
+                state.tracking_mouse = true;
+                state.hovered = true;
+                (track, invalidate)
+            });
+            if let Some((track, invalidate)) = changes {
+                if track {
                     let mut tracking = TRACKMOUSEEVENT {
                         cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
                         dwFlags: TME_LEAVE,
@@ -245,11 +255,9 @@ unsafe extern "system" fn hyper_link_text_window_proc(hwnd: HWND, msg: u32, wpar
                         dwHoverTime: 0,
                     };
                     let _ = unsafe { TrackMouseEvent(&mut tracking) };
-                    state.tracking_mouse = true;
                 }
 
-                if !state.hovered {
-                    state.hovered = true;
+                if invalidate {
                     unsafe {
                         let _ = InvalidateRect(Some(hwnd), None, false);
                     }
@@ -258,21 +266,27 @@ unsafe extern "system" fn hyper_link_text_window_proc(hwnd: HWND, msg: u32, wpar
             LRESULT(0)
         }
         WM_MOUSELEAVE => {
-            if let Some(state) = hyper_link_state_mut(hwnd) {
+            let invalidate = with_hyper_link_state(hwnd, |state| {
                 let should_invalidate = state.hovered;
                 state.hovered = false;
                 state.tracking_mouse = false;
-                if should_invalidate {
-                    unsafe {
-                        let _ = InvalidateRect(Some(hwnd), None, false);
-                    }
+                should_invalidate
+            })
+            .unwrap_or(false);
+            if invalidate {
+                unsafe {
+                    let _ = InvalidateRect(Some(hwnd), None, false);
                 }
             }
             LRESULT(0)
         }
         WM_LBUTTONUP => {
-            if let Some(state) = hyper_link_state_mut(hwnd) {
-                (state.on_click)(hwnd);
+            let callback = hyper_link_state(hwnd).map(|state| state.on_click);
+            if let Some(callback) = callback {
+                // A nested click cannot reborrow the active FnMut callback.
+                if let Ok(mut callback) = callback.try_borrow_mut() {
+                    callback(hwnd);
+                }
             }
             LRESULT(0)
         }
@@ -288,10 +302,10 @@ unsafe extern "system" fn hyper_link_text_window_proc(hwnd: HWND, msg: u32, wpar
         WM_NCDESTROY => {
             let raw = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
             if raw != 0 {
-                let _ = unsafe { Box::from_raw(raw as *mut HyperLinkTextState) };
                 unsafe {
                     SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                 }
+                let _ = unsafe { Box::from_raw(raw as *mut HyperLinkTextState) };
             }
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
@@ -299,15 +313,14 @@ unsafe extern "system" fn hyper_link_text_window_proc(hwnd: HWND, msg: u32, wpar
     }
 }
 
-fn draw_hyper_link_text(hwnd: HWND, hdc: HDC, hovered: bool) -> Result<()> {
-    let state = hyper_link_state(hwnd).ok_or_else(Error::from_win32)?;
+fn draw_hyper_link_text(hwnd: HWND, hdc: HDC, state: &HyperLinkTextState) -> Result<()> {
     let mut text = wide_text(&state.text);
     let mut text_rect = client_rect(hwnd)?;
-    let old_font = unsafe { SelectObject(hdc, state.font.into()) };
+    let old_font = unsafe { SelectObject(hdc, state.font.0.into()) };
 
     unsafe {
         let _ = SetBkMode(hdc, TRANSPARENT);
-        let _ = SetTextColor(hdc, current_link_color(hovered));
+        let _ = SetTextColor(hdc, current_link_color(state.hovered));
         let _ = DrawTextW(
             hdc,
             text.as_mut_slice(),
@@ -367,18 +380,15 @@ fn create_link_font(base_font: HFONT) -> Result<HFONT> {
         Ok(handle)
     }
 }
-fn hyper_link_state(hwnd: HWND) -> Option<&'static HyperLinkTextState> {
+fn hyper_link_state(hwnd: HWND) -> Option<HyperLinkTextState> {
     let raw = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const HyperLinkTextState;
-    unsafe { raw.as_ref() }
+    unsafe { raw.as_ref().cloned() }
 }
 
-fn hyper_link_state_mut(hwnd: HWND) -> Option<&'static mut HyperLinkTextState> {
+// Window calls and user callbacks run outside this local mutation.
+fn with_hyper_link_state<R>(hwnd: HWND, update: impl FnOnce(&mut HyperLinkTextState) -> R) -> Option<R> {
     let raw = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut HyperLinkTextState;
-    unsafe { raw.as_mut() }
-}
-
-fn hyper_link_hovered(hwnd: HWND) -> bool {
-    hyper_link_state(hwnd).map(|state| state.hovered).unwrap_or(false)
+    unsafe { raw.as_mut().map(update) }
 }
 
 fn current_link_color(hovered: bool) -> COLORREF {
@@ -404,4 +414,193 @@ const fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
 
 fn wide_text(value: &str) -> Vec<u16> {
     value.encode_utf16().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+    use windows::Win32::UI::WindowsAndMessaging::SendMessageW;
+
+    struct TestParent(HWND);
+    impl Drop for TestParent {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = DestroyWindow(self.0);
+            }
+        }
+    }
+    struct DropProbe(Rc<Cell<u32>>);
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    fn test_parent() -> Result<TestParent> {
+        let instance = current_module_instance()?;
+        unsafe {
+            CreateWindowExW(
+                Default::default(),
+                w!("STATIC"),
+                w!(""),
+                Default::default(),
+                0,
+                0,
+                400,
+                200,
+                None,
+                None,
+                Some(instance),
+                None,
+            )
+            .map(TestParent)
+        }
+    }
+
+    fn base_font() -> HFONT {
+        crate::ui::font::common_gui_font(96, false).unwrap()
+    }
+
+    fn font_is_valid(font: HFONT) -> bool {
+        let mut info = LOGFONTW::default();
+        unsafe {
+            GetObjectW(
+                font.into(),
+                std::mem::size_of::<LOGFONTW>() as i32,
+                Some((&mut info as *mut LOGFONTW).cast()),
+            ) != 0
+        }
+    }
+
+    #[test]
+    fn nested_click_skips_busy_callback_and_owner_destruction_keeps_callback_alive() -> Result<()> {
+        let parent = test_parent()?;
+        let owner = parent.0;
+        let calls = Rc::new(Cell::new(0));
+        let drops = Rc::new(Cell::new(0));
+        let callback_calls = calls.clone();
+        let callback_drops = drops.clone();
+        let probe = DropProbe(drops.clone());
+        let link = HyperLinkText::create(owner, "Example", base_font(), 96, move |hwnd| {
+            let _keep_alive = &probe;
+            callback_calls.set(callback_calls.get() + 1);
+            unsafe {
+                SendMessageW(hwnd, WM_LBUTTONUP, None, None);
+                SendMessageW(hwnd, WM_MOUSEMOVE, None, None);
+                SendMessageW(hwnd, WM_MOUSELEAVE, None, None);
+                if callback_calls.get() == 2 {
+                    DestroyWindow(owner).unwrap();
+                    assert!(hyper_link_state(hwnd).is_none());
+                    assert_eq!(callback_drops.get(), 0, "the active callback must outlive its window");
+                }
+            }
+        })?;
+        let font = Rc::downgrade(&hyper_link_state(link.hwnd).unwrap().font);
+        unsafe {
+            SendMessageW(link.hwnd, WM_LBUTTONUP, None, None);
+        }
+        assert_eq!(calls.get(), 1);
+        assert!(!hyper_link_state(link.hwnd).unwrap().hovered);
+        assert_eq!(drops.get(), 0);
+        unsafe {
+            SendMessageW(link.hwnd, WM_LBUTTONUP, None, None);
+        }
+        assert_eq!(calls.get(), 2);
+        assert_eq!(drops.get(), 1);
+        assert!(font.upgrade().is_none());
+        assert!(hyper_link_state(link.hwnd).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn font_snapshots_survive_replacement_and_parent_destruction() -> Result<()> {
+        let parent = test_parent()?;
+        let link = HyperLinkText::create(parent.0, "Example", base_font(), 96, |_| {})?;
+        let snapshot = hyper_link_state(link.hwnd).unwrap();
+        let old_font = snapshot.font.0;
+        let old_owner = Rc::downgrade(&snapshot.font);
+        let large_base = crate::ui::font::common_gui_font(192, false).unwrap();
+        link.set_font(large_base, 192)?;
+        assert!(font_is_valid(old_font));
+        drop(snapshot);
+        assert!(old_owner.upgrade().is_none());
+        assert!(!font_is_valid(old_font));
+        let snapshot = hyper_link_state(link.hwnd).unwrap();
+        let current_font = snapshot.font.0;
+        assert!(link.set_font(HFONT::default(), 96).is_err());
+        assert!(Rc::ptr_eq(&hyper_link_state(link.hwnd).unwrap().font, &snapshot.font));
+        drop(parent);
+        assert!(hyper_link_state(link.hwnd).is_none());
+        assert!(font_is_valid(current_font));
+        let dc = unsafe { windows::Win32::Graphics::Gdi::CreateCompatibleDC(None) };
+        let measured = measure_text_rect(dc, &snapshot.text, snapshot.font.0, snapshot.dpi)?;
+        assert!(measured.right > 0 && measured.bottom > 0);
+        unsafe {
+            let _ = windows::Win32::Graphics::Gdi::DeleteDC(dc);
+        }
+        drop(snapshot);
+        assert!(!font_is_valid(current_font));
+        assert!(font_is_valid(large_base), "shared GUI font remains owned by its cache");
+        Ok(())
+    }
+
+    #[test]
+    fn failed_creation_drops_callback_once_before_and_after_state_attachment() -> Result<()> {
+        let parent = test_parent()?;
+        for (owner, font) in [(HWND(1usize as _), base_font()), (parent.0, HFONT::default())] {
+            let drops = Rc::new(Cell::new(0));
+            let probe = DropProbe(drops.clone());
+            assert!(
+                HyperLinkText::create(owner, "Example", font, 96, move |_| {
+                    let _ = &probe;
+                })
+                .is_err()
+            );
+            assert_eq!(drops.get(), 1);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn hover_font_and_paint_keep_link_layout_at_supported_dpis() -> Result<()> {
+        let parent = test_parent()?;
+        let link = HyperLinkText::create(parent.0, "Example link", base_font(), 96, |_| {})?;
+        for dpi in [96, 120, 144, 192, 96] {
+            let font = crate::ui::font::common_gui_font(dpi, false).unwrap();
+            link.set_font(font, dpi)?;
+            let state = hyper_link_state(link.hwnd).unwrap();
+            let mut info = LOGFONTW::default();
+            assert_ne!(
+                unsafe {
+                    GetObjectW(
+                        state.font.0.into(),
+                        std::mem::size_of::<LOGFONTW>() as i32,
+                        Some((&mut info as *mut LOGFONTW).cast()),
+                    )
+                },
+                0
+            );
+            assert_eq!(info.lfUnderline, 1);
+            let dc = unsafe { windows::Win32::Graphics::Gdi::GetDC(Some(parent.0)) };
+            let (width, height) = link.window_size(dc)?;
+            link.move_to(RECT {
+                left: 0,
+                top: 0,
+                right: width,
+                bottom: height,
+            })?;
+            unsafe {
+                windows::Win32::Graphics::Gdi::ReleaseDC(Some(parent.0), dc);
+                SendMessageW(link.hwnd, WM_MOUSEMOVE, None, None);
+                assert!(hyper_link_state(link.hwnd).unwrap().hovered);
+                SendMessageW(link.hwnd, WM_PAINT, None, None);
+                SendMessageW(link.hwnd, WM_MOUSELEAVE, None, None);
+            }
+            let state = hyper_link_state(link.hwnd).unwrap();
+            assert!(!state.hovered && !state.tracking_mouse);
+            assert_eq!(state.dpi, dpi);
+        }
+        Ok(())
+    }
 }

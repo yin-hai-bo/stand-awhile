@@ -42,6 +42,7 @@ struct ButtonColors {
     icon: COLORREF,
 }
 
+#[derive(Clone, Copy)]
 struct ButtonWindowState {
     kind: ControlButton,
     hovered: bool,
@@ -221,10 +222,11 @@ unsafe extern "system" fn button_window_proc(hwnd: HWND, msg: u32, wparam: WPARA
             LRESULT(1)
         }
         WM_PAINT => {
+            let state = button_state(hwnd);
             let mut paint = PAINTSTRUCT::default();
             let hdc = unsafe { BeginPaint(hwnd, &mut paint) };
-            if let Some(state) = button_state(hwnd) {
-                let _ = paint_button_buffered(hwnd, hdc, state);
+            if let Some(state) = state {
+                let _ = paint_button_buffered(hwnd, hdc, &state);
             }
             unsafe {
                 let _ = EndPaint(hwnd, &paint);
@@ -241,9 +243,9 @@ unsafe extern "system" fn button_window_proc(hwnd: HWND, msg: u32, wparam: WPARA
         }
         WM_SETFOCUS | WM_KILLFOCUS => {
             if msg == WM_KILLFOCUS {
-                if let Some(state) = button_state_mut(hwnd) {
+                with_button_state(hwnd, |state| {
                     state.pressed = false;
-                }
+                });
             }
             unsafe {
                 let _ = InvalidateRect(Some(hwnd), None, false);
@@ -254,15 +256,17 @@ unsafe extern "system" fn button_window_proc(hwnd: HWND, msg: u32, wparam: WPARA
             if !is_button_enabled(hwnd) {
                 return LRESULT(0);
             }
-            let mut should_click = false;
-            if let Some(state) = button_state_mut(hwnd) {
+            let should_click = with_button_state(hwnd, |state| {
+                let mut should_click = false;
                 if msg == WM_KEYUP {
                     should_click = state.pressed;
                     state.pressed = false;
                 } else {
                     state.pressed = true;
                 }
-            }
+                should_click
+            })
+            .unwrap_or(false);
             unsafe {
                 let _ = InvalidateRect(Some(hwnd), None, false);
             }
@@ -273,11 +277,11 @@ unsafe extern "system" fn button_window_proc(hwnd: HWND, msg: u32, wparam: WPARA
         }
         WM_CHAR => LRESULT(0),
         WM_ENABLE => {
-            if let Some(state) = button_state_mut(hwnd) {
+            with_button_state(hwnd, |state| {
                 state.hovered = false;
                 state.pressed = false;
                 state.tracking_mouse = false;
-            }
+            });
             unsafe {
                 let _ = InvalidateRect(Some(hwnd), None, false);
             }
@@ -287,8 +291,15 @@ unsafe extern "system" fn button_window_proc(hwnd: HWND, msg: u32, wparam: WPARA
             let enabled = is_button_enabled(hwnd);
             let inside = enabled && point_in_button(hwnd, lparam);
 
-            if let Some(state) = button_state_mut(hwnd) {
-                if enabled && !state.tracking_mouse {
+            let changes = with_button_state(hwnd, |state| {
+                let track = enabled && !state.tracking_mouse;
+                state.tracking_mouse |= track;
+                let invalidate = state.hovered != inside;
+                state.hovered = inside;
+                (track, invalidate)
+            });
+            if let Some((track, invalidate)) = changes {
+                if track {
                     let mut tracking = TRACKMOUSEEVENT {
                         cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
                         dwFlags: TME_LEAVE,
@@ -296,11 +307,9 @@ unsafe extern "system" fn button_window_proc(hwnd: HWND, msg: u32, wparam: WPARA
                         dwHoverTime: 0,
                     };
                     let _ = unsafe { TrackMouseEvent(&mut tracking) };
-                    state.tracking_mouse = true;
                 }
 
-                if state.hovered != inside {
-                    state.hovered = inside;
+                if invalidate {
                     unsafe {
                         let _ = InvalidateRect(Some(hwnd), None, false);
                     }
@@ -310,15 +319,17 @@ unsafe extern "system" fn button_window_proc(hwnd: HWND, msg: u32, wparam: WPARA
             LRESULT(0)
         }
         WM_MOUSELEAVE => {
-            if let Some(state) = button_state_mut(hwnd) {
+            let invalidate = with_button_state(hwnd, |state| {
                 let should_invalidate = state.hovered || state.pressed;
                 state.hovered = false;
                 state.pressed = false;
                 state.tracking_mouse = false;
-                if should_invalidate {
-                    unsafe {
-                        let _ = InvalidateRect(Some(hwnd), None, false);
-                    }
+                should_invalidate
+            })
+            .unwrap_or(false);
+            if invalidate {
+                unsafe {
+                    let _ = InvalidateRect(Some(hwnd), None, false);
                 }
             }
             LRESULT(0)
@@ -328,14 +339,24 @@ unsafe extern "system" fn button_window_proc(hwnd: HWND, msg: u32, wparam: WPARA
                 return LRESULT(0);
             }
 
-            if let Some(state) = button_state_mut(hwnd) {
-                let inside = point_in_button(hwnd, lparam);
-                if inside {
+            let inside = point_in_button(hwnd, lparam);
+            if inside
+                && with_button_state(hwnd, |state| {
                     state.pressed = true;
                     state.hovered = true;
+                })
+                .is_some()
+            {
+                unsafe {
+                    let _ = SetCapture(hwnd);
+                }
+                if button_state(hwnd).is_some_and(|state| state.pressed) && is_button_enabled(hwnd) {
                     unsafe {
-                        let _ = SetCapture(hwnd);
                         let _ = SetFocus(Some(hwnd));
+                    }
+                }
+                if button_state(hwnd).is_some() {
+                    unsafe {
                         let _ = InvalidateRect(Some(hwnd), None, false);
                     }
                 }
@@ -346,17 +367,17 @@ unsafe extern "system" fn button_window_proc(hwnd: HWND, msg: u32, wparam: WPARA
         WM_LBUTTONUP => {
             let enabled = is_button_enabled(hwnd);
             let inside = enabled && point_in_button(hwnd, lparam);
-            let mut should_click = false;
-
-            if let Some(state) = button_state_mut(hwnd) {
-                should_click = state.pressed && inside;
+            let changes = with_button_state(hwnd, |state| {
+                let should_click = state.pressed && inside;
                 let should_invalidate = state.pressed || state.hovered != inside;
                 state.pressed = false;
                 state.hovered = inside;
-                if should_invalidate {
-                    unsafe {
-                        let _ = InvalidateRect(Some(hwnd), None, false);
-                    }
+                (should_click, should_invalidate)
+            });
+            let (should_click, should_invalidate) = changes.unwrap_or_default();
+            if should_invalidate {
+                unsafe {
+                    let _ = InvalidateRect(Some(hwnd), None, false);
                 }
             }
 
@@ -371,12 +392,15 @@ unsafe extern "system" fn button_window_proc(hwnd: HWND, msg: u32, wparam: WPARA
             LRESULT(0)
         }
         WM_CAPTURECHANGED => {
-            if let Some(state) = button_state_mut(hwnd) {
-                if state.pressed {
-                    state.pressed = false;
-                    unsafe {
-                        let _ = InvalidateRect(Some(hwnd), None, false);
-                    }
+            let invalidate = with_button_state(hwnd, |state| {
+                let pressed = state.pressed;
+                state.pressed = false;
+                pressed
+            })
+            .unwrap_or(false);
+            if invalidate {
+                unsafe {
+                    let _ = InvalidateRect(Some(hwnd), None, false);
                 }
             }
             LRESULT(0)
@@ -398,10 +422,10 @@ unsafe extern "system" fn button_window_proc(hwnd: HWND, msg: u32, wparam: WPARA
         WM_NCDESTROY => {
             let raw = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
             if raw != 0 {
-                let _ = unsafe { Box::from_raw(raw as *mut ButtonWindowState) };
                 unsafe {
                     SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                 }
+                let _ = unsafe { Box::from_raw(raw as *mut ButtonWindowState) };
             }
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
@@ -538,6 +562,9 @@ fn button_layouts_for_rect(client_rect: RECT, dpi: u32) -> [ControlButtonLayout;
 }
 
 fn notify_parent_clicked(hwnd: HWND) {
+    if !is_button_enabled(hwnd) {
+        return;
+    }
     let Ok(parent) = (unsafe { GetParent(hwnd) }) else {
         return;
     };
@@ -580,14 +607,15 @@ fn point_from_lparam(lparam: LPARAM) -> (i32, i32) {
     (x, y)
 }
 
-fn button_state(hwnd: HWND) -> Option<&'static ButtonWindowState> {
+fn button_state(hwnd: HWND) -> Option<ButtonWindowState> {
     let raw = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const ButtonWindowState;
-    unsafe { raw.as_ref() }
+    unsafe { raw.as_ref().copied() }
 }
 
-fn button_state_mut(hwnd: HWND) -> Option<&'static mut ButtonWindowState> {
+// Window calls must run after this local mutation finishes.
+fn with_button_state<R>(hwnd: HWND, update: impl FnOnce(&mut ButtonWindowState) -> R) -> Option<R> {
     let raw = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut ButtonWindowState;
-    unsafe { raw.as_mut() }
+    unsafe { raw.as_mut().map(update) }
 }
 
 fn is_button_enabled(hwnd: HWND) -> bool {
@@ -900,6 +928,182 @@ impl Drop for GdiPlusPen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows::Win32::UI::WindowsAndMessaging::{DestroyWindow, MSG, PM_REMOVE, PeekMessageW, SendMessageW};
+
+    fn test_button() -> Result<(HWND, HWND)> {
+        use std::sync::OnceLock;
+        let instance: HINSTANCE = unsafe { windows::Win32::System::LibraryLoader::GetModuleHandleW(None)? }.into();
+        let class_name = w!("YHB-ControlButtonStateTest");
+        static REGISTERED: OnceLock<()> = OnceLock::new();
+        REGISTERED.get_or_init(|| {
+            let class = WNDCLASSW {
+                lpfnWndProc: Some(button_window_proc),
+                hInstance: instance,
+                lpszClassName: class_name,
+                ..Default::default()
+            };
+            assert_ne!(unsafe { RegisterClassW(&class) }, 0);
+        });
+        let parent = unsafe {
+            CreateWindowExW(
+                Default::default(),
+                w!("STATIC"),
+                w!(""),
+                Default::default(),
+                0,
+                0,
+                200,
+                200,
+                None,
+                None,
+                Some(instance),
+                None,
+            )?
+        };
+        let button = unsafe {
+            CreateWindowExW(
+                Default::default(),
+                class_name,
+                w!(""),
+                WS_CHILD | WS_TABSTOP,
+                0,
+                0,
+                100,
+                100,
+                Some(parent),
+                Some(HMENU(PLAY_BUTTON_ID as usize as _)),
+                Some(instance),
+                Some(PLAY_BUTTON_ID as usize as _),
+            )?
+        };
+        Ok((parent, button))
+    }
+
+    fn take_click(parent: HWND) -> Option<MSG> {
+        let mut message = MSG::default();
+        unsafe { PeekMessageW(&mut message, Some(parent), WM_COMMAND, WM_COMMAND, PM_REMOVE).as_bool() }
+            .then_some(message)
+    }
+
+    #[test]
+    fn mouse_keyboard_capture_and_focus_preserve_click_notifications() -> Result<()> {
+        let (parent, button) = test_button()?;
+        let point = LPARAM(50 | (50 << 16));
+        unsafe {
+            SendMessageW(button, WM_MOUSEMOVE, None, Some(point));
+            let state = button_state(button).unwrap();
+            assert!(state.hovered && state.tracking_mouse);
+            SendMessageW(button, WM_MOUSELEAVE, None, None);
+            assert!(!button_state(button).unwrap().hovered);
+            for key in [VK_SPACE, VK_RETURN] {
+                SendMessageW(button, WM_KEYDOWN, Some(WPARAM(key.0 as usize)), None);
+                assert!(button_state(button).unwrap().pressed);
+                SendMessageW(button, WM_KEYUP, Some(WPARAM(key.0 as usize)), None);
+                assert_eq!(
+                    button_from_command(take_click(parent).unwrap().wParam),
+                    Some(ControlButton::Play)
+                );
+                assert!(take_click(parent).is_none());
+                SendMessageW(button, WM_KEYDOWN, Some(WPARAM(key.0 as usize)), None);
+                SendMessageW(button, WM_KILLFOCUS, None, None);
+                SendMessageW(button, WM_KEYUP, Some(WPARAM(key.0 as usize)), None);
+                assert!(take_click(parent).is_none());
+            }
+            SendMessageW(button, WM_LBUTTONDOWN, None, Some(point));
+            SendMessageW(button, WM_LBUTTONUP, None, Some(point));
+            let click = take_click(parent).unwrap();
+            assert_eq!(click.lParam.0, button.0 as isize);
+            assert_eq!(button_from_command(click.wParam), Some(ControlButton::Play));
+            SendMessageW(button, WM_LBUTTONDOWN, None, Some(point));
+            let _ = ReleaseCapture();
+            assert!(!button_state(button).unwrap().pressed);
+            SendMessageW(button, WM_LBUTTONUP, None, Some(point));
+            assert!(take_click(parent).is_none());
+            let _ = EnableWindow(button, false);
+            SendMessageW(button, WM_KEYDOWN, Some(WPARAM(VK_SPACE.0 as usize)), None);
+            SendMessageW(button, WM_KEYUP, Some(WPARAM(VK_SPACE.0 as usize)), None);
+            assert!(take_click(parent).is_none());
+            DestroyWindow(parent)?;
+        }
+        assert!(button_state(button).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn release_capture_callback_cancels_click_after_destruction_or_disable() -> Result<()> {
+        use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
+        unsafe extern "system" fn callback(
+            hwnd: HWND,
+            msg: u32,
+            wp: WPARAM,
+            lp: LPARAM,
+            _: usize,
+            destroy: usize,
+        ) -> LRESULT {
+            if msg == WM_CAPTURECHANGED {
+                unsafe {
+                    if destroy != 0 {
+                        let _ = DestroyWindow(hwnd);
+                    } else {
+                        let _ = EnableWindow(hwnd, false);
+                    }
+                }
+                return LRESULT(0);
+            }
+            unsafe { DefSubclassProc(hwnd, msg, wp, lp) }
+        }
+        for destroy in [false, true] {
+            let (parent, button) = test_button()?;
+            let point = LPARAM(50 | (50 << 16));
+            unsafe {
+                SendMessageW(button, WM_LBUTTONDOWN, None, Some(point));
+                assert!(SetWindowSubclass(button, Some(callback), 1, destroy as usize).as_bool());
+                SendMessageW(button, WM_LBUTTONUP, None, Some(point));
+            }
+            assert!(take_click(parent).is_none());
+            if destroy {
+                assert!(button_state(button).is_none());
+            } else {
+                assert!(!is_button_enabled(button));
+            }
+            unsafe {
+                DestroyWindow(parent)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn capture_transfer_callback_can_destroy_button_before_focus() -> Result<()> {
+        use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
+        unsafe extern "system" fn callback(
+            hwnd: HWND,
+            msg: u32,
+            wp: WPARAM,
+            lp: LPARAM,
+            _: usize,
+            button: usize,
+        ) -> LRESULT {
+            if msg == WM_CAPTURECHANGED {
+                unsafe {
+                    let _ = DestroyWindow(HWND(button as _));
+                }
+            }
+            unsafe { DefSubclassProc(hwnd, msg, wp, lp) }
+        }
+        let (parent, button) = test_button()?;
+        unsafe {
+            assert!(SetWindowSubclass(parent, Some(callback), 1, button.0 as usize).as_bool());
+            SetCapture(parent);
+            SendMessageW(button, WM_LBUTTONDOWN, None, Some(LPARAM(50 | (50 << 16))));
+        }
+        assert!(button_state(button).is_none());
+        assert!(take_click(parent).is_none());
+        unsafe {
+            DestroyWindow(parent)?;
+        }
+        Ok(())
+    }
 
     #[test]
     fn button_layout_and_hit_area_follow_dpi_changes() {
